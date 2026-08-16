@@ -1,43 +1,66 @@
 # 🇸🇳 TerangaHost
 
-> **L'art d'accueillir et propulser vos applications et APIs Laravel en Production sur VPS Ubuntu.**  
-> Outil CLI Open Source en Go, ultra-léger, rapide, sécurisé et pensé pour les développeurs.
+<p align="center">
+  <strong>The Art of Hosting and Scaling Production Laravel APIs on Ubuntu VPS.</strong><br>
+  An ultra-fast, zero-dependency, open-source Go CLI tool built for developers.
+</p>
+
+<p align="center">
+  <a href="README.fr.md">🇫🇷 Lire en Français</a> •
+  <a href="#-key-features">Key Features</a> •
+  <a href="#-quick-start">Quick Start</a> •
+  <a href="#-architecture">Architecture</a> •
+  <a href="CONTRIBUTING.md">Contributing</a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go" alt="Go Version" />
+  <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License" />
+  <img src="https://img.shields.io/badge/Platform-Ubuntu%2022.04%20%7C%2024.04-E95420?style=flat&logo=ubuntu" alt="Ubuntu Platform" />
+  <img src="https://img.shields.io/badge/Laravel-10%20%7C%2011%20%7C%2012-FF2D20?style=flat&logo=laravel" alt="Laravel Support" />
+</p>
 
 ---
 
-## 🌟 Pourquoi TerangaHost ?
+## 🌟 Why TerangaHost?
 
-Déployer et configurer une API Laravel de production sur un VPS nu (*Ubuntu 22.04 / 24.04*) est historiquement chronophage et source de pannes (conflits Nginx / PHP-FPM, crashs OOM sur les VPS 1 Go, erreurs 500 sur les permissions `storage/`, daemons Supervisor, blocages Let's Encrypt).
+Deploying a production Laravel API on a bare-metal **Ubuntu VPS** is notoriously complex, prone to misconfigurations, and expensive when using hosted management panels:
 
-**TerangaHost** automatise 100 % de cette chaîne sans surcoût, sans interface lourde consommatrice de RAM, et sous forme d'un **binaire unique sans dépendance**.
+- **Nginx & PHP-FPM Socket Conflicts**: Suboptimal FastCGI buffer sizes causing API request drops.
+- **Low RAM VPS Crisis (1GB RAM)**: The Linux **OOM Killer** crashing MySQL or hanging SSH sessions during deployments.
+- **Background Workers & Queues**: Tedious Supervisor daemon configuration and restart policies.
+- **SSL Rate Limits**: Let's Encrypt domain bans due to DNS propagation delays.
+- **Permission Pitfalls**: Infamous 500 errors on `storage/` and `bootstrap/cache/`.
 
----
-
-## 🚀 Fonctionnalités Clés
-
-- **⚡ Provisionnement en 1 Commande** : Transforme un VPS Ubuntu brut en serveur de production complet (PHP 8.2/8.3/8.4 + 14 extensions, Nginx, Supervisor, Composer, MariaDB/PostgreSQL, Redis).
-- **🛡️ Sécurité & Moindre Privilège** : Création automatique d'un utilisateur `deployer`, pare-feu UFW (22, 80, 443), Fail2ban, et `sudoers` restreint aux stricts services web.
-- **🧠 Protection OOM Killer (Hardware-Aware)** : Création automatique de 2 Go de SWAP et calcul dynamique des mémoires tampons MySQL et PHP-FPM selon la RAM réelle du serveur.
-- **🌐 Isolation Multi-Sites** : Un pool PHP-FPM et des workers Supervisor dédiés par application/API.
-- **🔒 SSL Automatique & Pre-flight DNS** : Vérification de la propagation DNS avant d'interroger Let's Encrypt pour éviter tout bannissement de quota.
-- **🔄 Déploiement Zero-Downtime** : Gestion atomique des releases par liens symboliques, mise en cache automatique (`config:cache`, `route:cache`) et redémarrage fluide des queues.
-- **🩺 Diagnostic Intégré (`doctor`)** : Détection instantanée des pannes (disque, RAM, crashs Nginx/PHP).
+**TerangaHost** automates the entire infrastructure lifecycle in **a single, standalone binary** with zero local dependencies and zero VPS background bloat.
 
 ---
 
-## 📦 Installation & Démarrage Rapide
+## 🚀 Key Features
 
-### 1. Cloner et compiler
+- **⚡ 1-Command Server Provisioning**: Turns a fresh Ubuntu 22.04 / 24.04 VPS into an enterprise-grade Laravel production server (PHP 8.2 / 8.3 / 8.4 + 14 extensions, Nginx, Supervisor, Composer, MariaDB / PostgreSQL, Redis).
+- **🛡️ Least-Privilege Security**: Creates an isolated `deployer` user, strictly configures UFW firewall (ports 22, 80, 443), enables Fail2ban, and scopes `sudoers` to essential web services only.
+- **🧠 Hardware-Aware Memory Tuning**: Automatically creates 2GB of SWAP (`swappiness=10`) and dynamically calculates MySQL buffer pools and PHP-FPM process limits based on physical RAM.
+- **🌐 Multi-Tenant Site Isolation**: Dedicated PHP-FPM pools and namespaced Supervisor queue workers per application.
+- **🔒 Pre-Flight DNS & Auto SSL**: Queries global DNS (1.1.1.1 / 8.8.8.8) to verify domain resolution before requesting Let's Encrypt certificates, preventing rate-limit bans.
+- **🔄 Zero-Downtime Atomic Releases**: Symlink-based release pipeline with automated caching (`config:cache`, `route:cache`, `view:cache`) and graceful queue restarts.
+- **🩺 Instant Health Diagnostics (`doctor`)**: Inspects RAM, disk, service daemons, and recent Nginx/Laravel error logs in under 3 seconds.
+
+---
+
+## 📦 Quick Start
+
+### 1. Build from Source
 ```bash
-git clone https://github.com/teranga-host/terangahost.git
+git clone https://github.com/nosleepman1/terangahost.git
 cd terangahost
-go build -o terangahost main.go
+go build -o bin/terangahost main.go
 ```
 
-### 2. Provisionner un nouveau serveur VPS
+### 2. Provision a New VPS
 ```bash
-terangahost server provision \
-  --name=dakar-prod-01 \
+./bin/terangahost server provision \
+  --name=dakar-prod \
   --ip=192.168.1.50 \
   --user=root \
   --ssh-key=~/.ssh/id_ed25519 \
@@ -46,47 +69,55 @@ terangahost server provision \
   --redis
 ```
 
-### 3. Créer un site / API Laravel
+### 3. Create a Laravel Site / API
 ```bash
-terangahost site create \
-  --server=dakar-prod-01 \
-  --domain=api.monprojet.sn \
+./bin/terangahost site create \
+  --server=dakar-prod \
+  --domain=api.myapp.sn \
   --workers=2
 ```
 
-### 4. Déployer en Zero-Downtime
+### 4. Deploy with Zero-Downtime
 ```bash
-terangahost site deploy \
-  --server=dakar-prod-01 \
-  --domain=api.monprojet.sn \
-  --repo=https://github.com/votre-compte/votre-api-laravel \
+./bin/terangahost site deploy \
+  --server=dakar-prod \
+  --domain=api.myapp.sn \
+  --repo=https://github.com/your-org/your-laravel-api \
   --branch=main
 ```
 
-### 5. Inspecter la santé du serveur
+### 5. Inspect Server Health
 ```bash
-terangahost server doctor --name=dakar-prod-01
+./bin/terangahost server doctor --name=dakar-prod
 ```
 
 ---
 
-## 🏛️ Architecture Technique
+## 🏛️ Architecture
+
+TerangaHost is engineered using **Clean / Ports & Adapters Architecture** in Go:
 
 ```text
 terangahost/
-├── cmd/               # Commandes CLI Cobra (server, site, doctor, list)
+├── cmd/               # Cobra CLI commands (server, site, doctor, list)
 ├── internal/
-│   ├── domain/        # Cœur métier pur (Server, HardwareSpec, Step, Runner, Errors)
-│   ├── engine/        # Orchestrateur de Pipeline séquentiel et Idempotence
-│   │   └── steps/     # Les 8 étapes de provisionnement système
-│   ├── platform/      # Adaptateurs SSH natif (KeepAlive, TOFU), DNS et Storage
-│   └── ui/            # Rendu Terminal TUI (Lipgloss, Bubble Tea, Thème Teranga)
-├── templates/         # Configurations Nginx, PHP-FPM, Supervisor embarquées (embed.FS)
+│   ├── domain/        # Core business models (Server, HardwareSpec, Step, Runner)
+│   ├── engine/        # Sequential pipeline engine, hardware-aware tuner, steps
+│   ├── platform/      # Native Go SSH client (KeepAlive, TOFU), DNS & storage
+│   └── ui/            # Lipgloss / Bubble Tea terminal presentation
+├── templates/         # Embedded Nginx, PHP-FPM, Supervisor & Logrotate configs
 └── main.go
 ```
 
 ---
 
-## 🤝 Contribution & Communauté
+## 🤝 Contributing
 
-Ce projet est ouvert et maintenu avec cœur pour la communauté tech au Sénégal et en Afrique. Les contributions (Pull Requests, retours d'expérience, optimisations) sont les bienvenues !
+We welcome contributions from developers worldwide, with a special focus on empowering the tech ecosystem in Senegal and Africa!  
+Please read our [Contributing Guide](CONTRIBUTING.md) and [Code of Conduct](CODE_OF_CONDUCT.md).
+
+---
+
+## 📄 License
+
+This project is licensed under the [MIT License](LICENSE).
