@@ -1,0 +1,27 @@
+[{{ .ID }}]
+user = deployer
+group = www-data
+
+listen = /run/php/php{{ .PHPVersion }}-fpm-{{ .ID }}.sock
+listen.owner = www-data
+listen.group = www-data
+listen.mode = 0660
+
+pm = dynamic
+pm.max_children = {{ .MaxChildren }}
+pm.start_servers = {{ .StartServers }}
+pm.min_spare_servers = {{ .MinSpareServers }}
+pm.max_spare_servers = {{ .MaxSpareServers }}
+pm.max_requests = 1000
+
+request_terminate_timeout = 60s
+rlimit_files = 65536
+rlimit_core = 0
+
+chdir = /
+
+php_admin_value[memory_limit] = 256M
+php_admin_value[upload_max_filesize] = 64M
+php_admin_value[post_max_size] = 64M
+php_admin_value[error_log] = /var/log/nginx/{{ .ID }}-php-error.log
+php_admin_flag[log_errors] = on

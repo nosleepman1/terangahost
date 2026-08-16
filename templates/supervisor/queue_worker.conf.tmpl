@@ -1,0 +1,12 @@
+[program:{{ .ID }}-worker]
+process_name=%(program_name)s_%(process_num)02d
+command=php{{ .PHPVersion }} {{ .Directory }}/current/artisan queue:work --sleep=3 --tries=3 --max-time=3600
+autostart=true
+autorestart=true
+stopasgroup=true
+killasgroup=true
+user=deployer
+numprocs={{ .QueueWorkers }}
+redirect_stderr=true
+stdout_logfile={{ .Directory }}/shared/storage/logs/worker.log
+stopwaitsecs=3600
