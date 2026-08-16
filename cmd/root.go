@@ -10,11 +10,9 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:   "terangahost",
-	Short: "TerangaHost - Provisionneur et gestionnaire haute performance de VPS pour APIs Laravel",
-	Long: `TerangaHost est un outil CLI Open Source conçu pour automatiser l'hébergement
-et le déploiement sécurisé d'applications et d'APIs Laravel sur VPS Ubuntu.
-
-🇸🇳 Conçu avec rigueur pour la communauté Laravel Sénégal et Afrique.`,
+	Short: "TerangaHost - Provisionneur et gestionnaire d'infrastructure VPS pour APIs Laravel",
+	Long: `TerangaHost est un outil CLI Open Source concu pour automatiser la configuration
+et le deploiement securise d'applications et d'APIs Laravel sur VPS Ubuntu.`,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		if cmd.Name() != "help" && cmd.Name() != "version" {
 			ui.PrintBanner()

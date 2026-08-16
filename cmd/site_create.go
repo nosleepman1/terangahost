@@ -27,16 +27,16 @@ var (
 
 var siteCreateCmd = &cobra.Command{
 	Use:   "create",
-	Short: "Configure un nouveau site / API Laravel (Nginx, FPM Pool dédié, SSL Let's Encrypt, Queues)",
+	Short: "Configure un nouveau site / API Laravel (Nginx, FPM Pool dedie, SSL Let's Encrypt, Queues)",
 	Run: func(cmd *cobra.Command, args []string) {
 		runSiteCreate()
 	},
 }
 
 func init() {
-	siteCreateCmd.Flags().StringVar(&siteServerName, "server", "", "Nom du serveur hôte cible")
+	siteCreateCmd.Flags().StringVar(&siteServerName, "server", "", "Nom du serveur hote cible")
 	siteCreateCmd.Flags().StringVar(&siteDomain, "domain", "", "Nom de domaine principal (ex: api.monprojet.sn)")
-	siteCreateCmd.Flags().StringVar(&sitePHP, "php", "", "Version PHP (par défaut celle du serveur)")
+	siteCreateCmd.Flags().StringVar(&sitePHP, "php", "", "Version PHP (par defaut celle du serveur)")
 	siteCreateCmd.Flags().BoolVar(&siteSSL, "ssl", true, "Obtenir un certificat SSL Let's Encrypt automatique")
 	siteCreateCmd.Flags().IntVar(&siteWorkers, "workers", 2, "Nombre de processus worker Supervisor pour les queues")
 	siteCreateCmd.Flags().BoolVar(&siteReverb, "reverb", false, "Activer le support WebSockets Laravel Reverb")
@@ -56,13 +56,13 @@ func runSiteCreate() {
 
 	repo, err := storage.NewJSONRepository()
 	if err != nil {
-		fmt.Printf("%s %v\n", red("Erreur repository:"), err)
+		fmt.Printf("%s %v\n", red("[ERROR] Repository:"), err)
 		return
 	}
 
 	srv, err := repo.FindByName(ctx, siteServerName)
 	if err != nil {
-		fmt.Printf("%s Serveur [%s] introuvable.\n", red("Erreur:"), siteServerName)
+		fmt.Printf("%s Serveur [%s] introuvable.\n", red("[ERROR]"), siteServerName)
 		return
 	}
 
@@ -71,18 +71,18 @@ func runSiteCreate() {
 		phpVer = sitePHP
 	}
 
-	fmt.Printf("🌐 %s [%s] sur le serveur [%s]...\n\n", cyan("Création du site Laravel"), siteDomain, srv.Name)
+	fmt.Printf("[SITE] Creation du site Laravel [%s] sur [%s]...\n\n", siteDomain, srv.Name)
 
 	// 1. Pre-flight DNS Check si SSL est activé
 	if siteSSL {
-		fmt.Printf("🔍 Vérification de la propagation DNS pour %s...\n", cyan(siteDomain))
+		fmt.Printf("[DNS] Verification de la propagation pour %s...\n", cyan(siteDomain))
 		if err := dns.PreFlightDNSCheck(ctx, siteDomain, srv.IP); err != nil {
-			fmt.Printf("\n%s %v\n", yellow("⚠ AVERTISSEMENT DNS :"), err)
-			fmt.Printf("Pour éviter d'épuiser vos quotas Let's Encrypt, l'installation se poursuivra en HTTP standard.\n")
-			fmt.Printf("Vous pourrez activer le SSL plus tard avec 'terangahost site ssl --domain=%s'\n\n", siteDomain)
+			fmt.Printf("\n%s %v\n", yellow("[WARN DNS]"), err)
+			fmt.Printf("Pour eviter l'epuisement des quotas Let's Encrypt, l'installation se poursuivra en HTTP.\n")
+			fmt.Printf("Activez le SSL ulterieurement avec 'terangahost site ssl --domain=%s'\n\n", siteDomain)
 			siteSSL = false
 		} else {
-			fmt.Printf("  ✔ DNS vérifié : %s pointe parfaitement vers %s\n\n", siteDomain, srv.IP)
+			fmt.Printf("  [OK] DNS verifie : %s pointe vers %s\n\n", siteDomain, srv.IP)
 		}
 	}
 
@@ -94,7 +94,6 @@ func runSiteCreate() {
 		PrivateKeyPath: srv.SSHKeyPath,
 	})
 	if err != nil {
-		// Fallback root
 		client, err = ssh.NewNativeSSHClient(ssh.ClientOptions{
 			Host:           srv.IP,
 			Port:           srv.SSHPort,
@@ -102,7 +101,7 @@ func runSiteCreate() {
 			PrivateKeyPath: srv.SSHKeyPath,
 		})
 		if err != nil {
-			fmt.Printf("%s Connexion SSH impossible: %v\n", red("✖"), err)
+			fmt.Printf("%s Connexion SSH impossible: %v\n", red("[ERROR]"), err)
 			return
 		}
 	}
@@ -139,7 +138,7 @@ func runSiteCreate() {
 	}
 
 	// 3. Création de l'arborescence standard zero-downtime
-	fmt.Printf("📁 Création de la structure de répertoires sous %s...\n", siteDir)
+	fmt.Printf("[FS] Creation de l'arborescence sous %s...\n", siteDir)
 	setupDirs := []string{
 		fmt.Sprintf("sudo mkdir -p %s/releases %s/shared/storage/app %s/shared/storage/framework/cache %s/shared/storage/framework/sessions %s/shared/storage/framework/views %s/shared/storage/logs", siteDir, siteDir, siteDir, siteDir, siteDir, siteDir),
 		fmt.Sprintf("sudo chown -R deployer:www-data %s", siteDir),
@@ -150,7 +149,7 @@ func runSiteCreate() {
 	}
 
 	// 4. Génération et upload du template Pool FPM dédié
-	fmt.Printf("🐘 Configuration du pool PHP-FPM dédié (/run/php/php%s-fpm-%s.sock)...\n", phpVer, cleanID)
+	fmt.Printf("[PHP] Configuration du pool PHP-FPM dedie (/run/php/php%s-fpm-%s.sock)...\n", phpVer, cleanID)
 	fpmTmplContent, _ := templates.FS.ReadFile("php/fpm_pool.conf.tmpl")
 	tFpm, _ := template.New("fpm").Parse(string(fpmTmplContent))
 	var fpmBuf bytes.Buffer
@@ -161,7 +160,7 @@ func runSiteCreate() {
 	_ = runner.Execute(ctx, fmt.Sprintf("sudo service php%s-fpm restart", phpVer), nil, nil)
 
 	// 5. Génération et upload du template Nginx VirtualHost
-	fmt.Println("🌐 Configuration du VirtualHost Nginx...")
+	fmt.Println("[NGINX] Configuration du VirtualHost Nginx...")
 	nginxTmplContent, _ := templates.FS.ReadFile("nginx/laravel_api.conf.tmpl")
 	tNginx, _ := template.New("nginx").Parse(string(nginxTmplContent))
 	var nginxBuf bytes.Buffer
@@ -174,21 +173,21 @@ func runSiteCreate() {
 
 	// 6. Certificat SSL si éligible
 	if siteSSL {
-		fmt.Printf("🔒 Obtention du certificat SSL Let's Encrypt pour %s...\n", siteDomain)
+		fmt.Printf("[SSL] Obtention du certificat SSL Let's Encrypt pour %s...\n", siteDomain)
 		certCmd := fmt.Sprintf("sudo certbot --nginx -d %s --non-interactive --agree-tos --register-unsafely-without-email --redirect", siteDomain)
 		_, errCert := runner.RunSilent(ctx, certCmd)
 		if errCert == nil {
-			fmt.Printf("  %s Certificat SSL HTTPS activé avec succès !\n", green("✔"))
+			fmt.Printf("  [OK] Certificat SSL HTTPS active avec succes.\n")
 		} else {
-			fmt.Printf("  %s Échec de Certbot (%v), le site reste accessible en HTTP standard.\n", yellow("⚠"), errCert)
+			fmt.Printf("  [WARN] Echec de Certbot (%v), site disponible en HTTP.\n", errCert)
 		}
 	}
 
 	fmt.Println(color.HiBlackString("──────────────────────────────────────────────────────────────────────────"))
-	fmt.Printf("🎉 %s\n", green("SITE CONFIGURÉ AVEC SUCCÈS SUR LE SERVEUR !"))
-	fmt.Printf("🌐 Domaine : https://%s\n", siteDomain)
-	fmt.Printf("📁 Répertoire : %s\n", siteDir)
-	fmt.Printf("🚀 Prochaine étape : Déployez votre code avec :\n")
-	fmt.Printf("   %s\n", cyan(fmt.Sprintf("terangahost site deploy --server=%s --domain=%s --repo=https://github.com/votre-repo", srv.Name, siteDomain)))
+	fmt.Printf("%s Site configure avec succes.\n", green("[SUCCESS]"))
+	fmt.Printf("  - Domaine : https://%s\n", siteDomain)
+	fmt.Printf("  - Repertoire racine : %s\n", siteDir)
+	fmt.Printf("  - Deploiement initial :\n")
+	fmt.Printf("    %s\n", cyan(fmt.Sprintf("terangahost site deploy --server=%s --domain=%s --repo=https://github.com/votre-repo", srv.Name, siteDomain)))
 	fmt.Println(color.HiBlackString("──────────────────────────────────────────────────────────────────────────\n"))
 }

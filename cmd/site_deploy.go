@@ -20,7 +20,7 @@ var (
 
 var siteDeployCmd = &cobra.Command{
 	Use:   "deploy",
-	Short: "Déploie une version de votre API Laravel en Zero-Downtime",
+	Short: "Deploie une version de votre API Laravel en Zero-Downtime",
 	Long: `Clone le repository Git dans un nouveau dossier de release, installe Composer,
 applique les migrations, met en cache les routes et configs, puis bascule le symlink 'current'.`,
 	Run: func(cmd *cobra.Command, args []string) {
@@ -29,10 +29,10 @@ applique les migrations, met en cache les routes et configs, puis bascule le sym
 }
 
 func init() {
-	siteDeployCmd.Flags().StringVar(&deployServerName, "server", "", "Nom du serveur hôte cible")
+	siteDeployCmd.Flags().StringVar(&deployServerName, "server", "", "Nom du serveur hote cible")
 	siteDeployCmd.Flags().StringVar(&deployDomain, "domain", "", "Nom de domaine du site (ex: api.monprojet.sn)")
-	siteDeployCmd.Flags().StringVar(&deployRepo, "repo", "", "URL du dépôt Git (HTTPS ou SSH)")
-	siteDeployCmd.Flags().StringVar(&deployBranch, "branch", "main", "Branche Git à déployer (défaut: main)")
+	siteDeployCmd.Flags().StringVar(&deployRepo, "repo", "", "URL du depot Git (HTTPS ou SSH)")
+	siteDeployCmd.Flags().StringVar(&deployBranch, "branch", "main", "Branche Git a deployer (defaut: main)")
 
 	_ = siteDeployCmd.MarkFlagRequired("server")
 	_ = siteDeployCmd.MarkFlagRequired("domain")
@@ -49,18 +49,18 @@ func runSiteDeploy() {
 
 	repo, err := storage.NewJSONRepository()
 	if err != nil {
-		fmt.Printf("%s %v\n", red("Erreur repository:"), err)
+		fmt.Printf("%s %v\n", red("[ERROR] Repository:"), err)
 		return
 	}
 
 	srv, err := repo.FindByName(ctx, deployServerName)
 	if err != nil {
-		fmt.Printf("%s Serveur [%s] introuvable.\n", red("Erreur:"), deployServerName)
+		fmt.Printf("%s Serveur [%s] introuvable.\n", red("[ERROR]"), deployServerName)
 		return
 	}
 
-	fmt.Printf("🚀 %s pour [%s] sur [%s] (branche: %s)...\n\n",
-		cyan("Démarrage du déploiement Zero-Downtime"), deployDomain, srv.Name, deployBranch)
+	fmt.Printf("[DEPLOY] Demarrage du deploiement Zero-Downtime pour [%s] sur [%s] (branche: %s)...\n\n",
+		deployDomain, srv.Name, deployBranch)
 
 	client, err := ssh.NewNativeSSHClient(ssh.ClientOptions{
 		Host:           srv.IP,
@@ -69,7 +69,7 @@ func runSiteDeploy() {
 		PrivateKeyPath: srv.SSHKeyPath,
 	})
 	if err != nil {
-		fmt.Printf("%s Connexion SSH impossible: %v\n", red("✖"), err)
+		fmt.Printf("%s Connexion SSH impossible: %v\n", red("[ERROR]"), err)
 		return
 	}
 	defer client.Close()
@@ -90,12 +90,12 @@ func runSiteDeploy() {
 			cmd:  fmt.Sprintf("git clone --depth 1 --branch %s %s %s", deployBranch, deployRepo, releaseDir),
 		},
 		{
-			desc: "2. Liaison des fichiers et dossiers partagés (.env, storage/)",
+			desc: "2. Liaison des fichiers et dossiers partages (.env, storage/)",
 			cmd: fmt.Sprintf("ln -nfs %s/shared/.env %s/.env && rm -rf %s/storage && ln -nfs %s/shared/storage %s/storage",
 				siteDir, releaseDir, releaseDir, siteDir, releaseDir),
 		},
 		{
-			desc: "3. Installation des dépendances Composer (Optimized Autoloader)",
+			desc: "3. Installation des dependances Composer (Optimized Autoloader)",
 			cmd:  fmt.Sprintf("cd %s && composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader", releaseDir),
 		},
 		{
@@ -103,7 +103,7 @@ func runSiteDeploy() {
 			cmd:  fmt.Sprintf("cd %s && php artisan config:cache && php artisan route:cache && php artisan view:cache", releaseDir),
 		},
 		{
-			desc: "5. Exécution des migrations de base de données (si configurée)",
+			desc: "5. Execution des migrations de base de donnees",
 			cmd:  fmt.Sprintf("cd %s && [ -f .env ] && php artisan migrate --force || true", releaseDir),
 		},
 		{
@@ -111,27 +111,27 @@ func runSiteDeploy() {
 			cmd:  fmt.Sprintf("ln -sfn %s %s/current", releaseDir, siteDir),
 		},
 		{
-			desc: "7. Rechargement de PHP-FPM et redémarrage des workers de queue",
+			desc: "7. Rechargement de PHP-FPM et redemarrage des workers de queue",
 			cmd: fmt.Sprintf("sudo service php%s-fpm reload && sudo supervisorctl restart all || true",
 				srv.PHPVersion),
 		},
 		{
-			desc: "8. Nettoyage des anciennes releases (conservation des 5 dernières)",
+			desc: "8. Nettoyage des anciennes releases (conservation des 5 dernieres)",
 			cmd:  fmt.Sprintf("cd %s/releases && ls -t | tail -n +6 | xargs -r rm -rf", siteDir),
 		},
 	}
 
 	for _, step := range deploySteps {
-		fmt.Printf("  %s %s...\n", cyan("▶"), step.desc)
+		fmt.Printf("  %s %s...\n", cyan("[STEP]"), step.desc)
 		if err := runner.Execute(ctx, step.cmd, nil, nil); err != nil {
-			fmt.Printf("\n%s Échec à l'étape: %s\n%v\n", red("✖ ERREUR DÉPLOIEMENT :"), step.desc, err)
+			fmt.Printf("\n%s Echec a l'etape: %s\n%v\n", red("[ERROR DEPLOY]"), step.desc, err)
 			return
 		}
 	}
 
 	fmt.Println(color.HiBlackString("──────────────────────────────────────────────────────────────────────────"))
-	fmt.Printf("🎉 %s\n", green("DÉPLOIEMENT ZERO-DOWNTIME TERMINÉ AVEC SUCCÈS !"))
-	fmt.Printf("🌐 API en ligne : https://%s\n", deployDomain)
-	fmt.Printf("📦 Release ID : %s\n", releaseID)
+	fmt.Printf("%s Deploiement Zero-Downtime termine avec succes.\n", green("[SUCCESS]"))
+	fmt.Printf("  - URL : https://%s\n", deployDomain)
+	fmt.Printf("  - Identifiant de release : %s\n", releaseID)
 	fmt.Println(color.HiBlackString("──────────────────────────────────────────────────────────────────────────\n"))
 }

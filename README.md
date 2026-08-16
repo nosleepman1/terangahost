@@ -1,54 +1,53 @@
-# 🇸🇳 TerangaHost
+# TerangaHost
 
 <p align="center">
-  <strong>The Art of Hosting and Scaling Production Laravel APIs on Ubuntu VPS.</strong><br>
-  An ultra-fast, zero-dependency, open-source Go CLI tool built for developers.
+  <strong>High-Performance Infrastructure Provisioner and Zero-Downtime Deployment CLI for Laravel APIs on Ubuntu VPS.</strong>
 </p>
 
 <p align="center">
-  <a href="README.fr.md">🇫🇷 Lire en Français</a> •
-  <a href="#-key-features">Key Features</a> •
-  <a href="#-quick-start">Quick Start</a> •
-  <a href="#-architecture">Architecture</a> •
+  <a href="README.fr.md">Lire en Francais</a> •
+  <a href="#key-features">Key Features</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#architecture">Architecture</a> •
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go" alt="Go Version" />
-  <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License" />
+  <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License" />
   <img src="https://img.shields.io/badge/Platform-Ubuntu%2022.04%20%7C%2024.04-E95420?style=flat&logo=ubuntu" alt="Ubuntu Platform" />
   <img src="https://img.shields.io/badge/Laravel-10%20%7C%2011%20%7C%2012-FF2D20?style=flat&logo=laravel" alt="Laravel Support" />
 </p>
 
 ---
 
-## 🌟 Why TerangaHost?
+## Overview
 
-Deploying a production Laravel API on a bare-metal **Ubuntu VPS** is notoriously complex, prone to misconfigurations, and expensive when using hosted management panels:
+Deploying and managing production-grade Laravel APIs on bare-metal Ubuntu VPS instances presents persistent operational challenges:
 
-- **Nginx & PHP-FPM Socket Conflicts**: Suboptimal FastCGI buffer sizes causing API request drops.
-- **Low RAM VPS Crisis (1GB RAM)**: The Linux **OOM Killer** crashing MySQL or hanging SSH sessions during deployments.
-- **Background Workers & Queues**: Tedious Supervisor daemon configuration and restart policies.
-- **SSL Rate Limits**: Let's Encrypt domain bans due to DNS propagation delays.
-- **Permission Pitfalls**: Infamous 500 errors on `storage/` and `bootstrap/cache/`.
+- **Nginx and PHP-FPM Socket Contention**: Inappropriate FastCGI buffer sizes causing dropped connections on high-throughput JSON workloads.
+- **Low-Memory VPS Degradation**: Linux Out-Of-Memory (OOM) killer terminating database processes during Composer installations on 1GB RAM instances.
+- **Background Worker Orchestration**: Complex Supervisor daemon configuration, signal management, and restart strategies.
+- **ACME Rate-Limiting**: Let's Encrypt domain validation failures caused by asynchronous DNS propagation.
+- **Permission Discrepancies**: File permission conflicts across storage and cache directories.
 
-**TerangaHost** automates the entire infrastructure lifecycle in **a single, standalone binary** with zero local dependencies and zero VPS background bloat.
-
----
-
-## 🚀 Key Features
-
-- **⚡ 1-Command Server Provisioning**: Turns a fresh Ubuntu 22.04 / 24.04 VPS into an enterprise-grade Laravel production server (PHP 8.2 / 8.3 / 8.4 + 14 extensions, Nginx, Supervisor, Composer, MariaDB / PostgreSQL, Redis).
-- **🛡️ Least-Privilege Security**: Creates an isolated `deployer` user, strictly configures UFW firewall (ports 22, 80, 443), enables Fail2ban, and scopes `sudoers` to essential web services only.
-- **🧠 Hardware-Aware Memory Tuning**: Automatically creates 2GB of SWAP (`swappiness=10`) and dynamically calculates MySQL buffer pools and PHP-FPM process limits based on physical RAM.
-- **🌐 Multi-Tenant Site Isolation**: Dedicated PHP-FPM pools and namespaced Supervisor queue workers per application.
-- **🔒 Pre-Flight DNS & Auto SSL**: Queries global DNS (1.1.1.1 / 8.8.8.8) to verify domain resolution before requesting Let's Encrypt certificates, preventing rate-limit bans.
-- **🔄 Zero-Downtime Atomic Releases**: Symlink-based release pipeline with automated caching (`config:cache`, `route:cache`, `view:cache`) and graceful queue restarts.
-- **🩺 Instant Health Diagnostics (`doctor`)**: Inspects RAM, disk, service daemons, and recent Nginx/Laravel error logs in under 3 seconds.
+**TerangaHost** is a compiled, standalone CLI tool written in Go that automates server provisioning, security hardening, multi-tenant isolation, and zero-downtime deployments without local dependencies or runtime overhead on target instances.
 
 ---
 
-## 📦 Quick Start
+## Key Features
+
+- **Single-Command Server Provisioning**: Automated configuration of Ubuntu 22.04 and 24.04 LTS servers including PHP (8.2, 8.3, 8.4) with all 14 mandatory extensions, Nginx, Supervisor, Composer, MariaDB or PostgreSQL, and Redis.
+- **Least-Privilege Security Model**: Automated creation of a dedicated `deployer` user, strict UFW firewall rules (ports 22, 80, 443), Fail2ban daemon configuration, and granular `sudoers` policies restricted strictly to web services.
+- **Hardware-Aware Memory Tuning**: Automatic 2GB swap partition allocation (`swappiness=10`) with dynamic calculation of InnoDB buffer pool sizes and PHP-FPM process limits based on real physical memory.
+- **Multi-Tenant Site Isolation**: Dedicated Unix sockets and PHP-FPM process pools per application to prevent cross-site resource exhaustion.
+- **Pre-Flight DNS Verification**: Direct upstream DNS queries (1.1.1.1 and 8.8.8.8) to validate domain propagation prior to triggering ACME / Let's Encrypt issuance.
+- **Atomic Zero-Downtime Deployments**: Symlink-switched release pipeline with automated framework caching and background worker reloading.
+- **System Health Diagnostics (`doctor`)**: Real-time inspection of disk usage, RAM utilization, active daemons, and recent Nginx / Laravel error logs.
+
+---
+
+## Quick Start
 
 ### 1. Build from Source
 ```bash
@@ -57,10 +56,10 @@ cd terangahost
 go build -o bin/terangahost main.go
 ```
 
-### 2. Provision a New VPS
+### 2. Provision a New Server
 ```bash
 ./bin/terangahost server provision \
-  --name=dakar-prod \
+  --name=prod-01 \
   --ip=192.168.1.50 \
   --user=root \
   --ssh-key=~/.ssh/id_ed25519 \
@@ -69,55 +68,54 @@ go build -o bin/terangahost main.go
   --redis
 ```
 
-### 3. Create a Laravel Site / API
+### 3. Configure a Laravel Site / API
 ```bash
 ./bin/terangahost site create \
-  --server=dakar-prod \
-  --domain=api.myapp.sn \
+  --server=prod-01 \
+  --domain=api.domain.com \
   --workers=2
 ```
 
-### 4. Deploy with Zero-Downtime
+### 4. Deploy Application Code
 ```bash
 ./bin/terangahost site deploy \
-  --server=dakar-prod \
-  --domain=api.myapp.sn \
+  --server=prod-01 \
+  --domain=api.domain.com \
   --repo=https://github.com/your-org/your-laravel-api \
   --branch=main
 ```
 
-### 5. Inspect Server Health
+### 5. Run System Diagnostics
 ```bash
-./bin/terangahost server doctor --name=dakar-prod
+./bin/terangahost server doctor --name=prod-01
 ```
 
 ---
 
-## 🏛️ Architecture
+## Architecture
 
-TerangaHost is engineered using **Clean / Ports & Adapters Architecture** in Go:
+TerangaHost implements Clean Architecture (Ports & Adapters) principles:
 
 ```text
 terangahost/
-├── cmd/               # Cobra CLI commands (server, site, doctor, list)
+├── cmd/               # CLI layer (Cobra commands: server, site, doctor, list)
 ├── internal/
-│   ├── domain/        # Core business models (Server, HardwareSpec, Step, Runner)
+│   ├── domain/        # Core business models (Server, HardwareSpec, Step, Runner, Errors)
 │   ├── engine/        # Sequential pipeline engine, hardware-aware tuner, steps
 │   ├── platform/      # Native Go SSH client (KeepAlive, TOFU), DNS & storage
-│   └── ui/            # Lipgloss / Bubble Tea terminal presentation
-├── templates/         # Embedded Nginx, PHP-FPM, Supervisor & Logrotate configs
+│   └── ui/            # Terminal formatting and output renderers
+├── templates/         # Embedded Nginx, PHP-FPM, Supervisor, and Logrotate configs
 └── main.go
 ```
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
-We welcome contributions from developers worldwide, with a special focus on empowering the tech ecosystem in Senegal and Africa!  
-Please read our [Contributing Guide](CONTRIBUTING.md) and [Code of Conduct](CODE_OF_CONDUCT.md).
+Please review our [Contributing Guidelines](CONTRIBUTING.md) and [Code of Conduct](CODE_OF_CONDUCT.md) before submitting pull requests.
 
 ---
 
-## 📄 License
+## License
 
 This project is licensed under the [MIT License](LICENSE).

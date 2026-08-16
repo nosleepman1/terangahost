@@ -7,7 +7,7 @@ import (
 	"github.com/fatih/color"
 )
 
-// PrintBanner affiche la bannière officielle de TerangaHost
+// PrintBanner affiche la bannière textuelle de TerangaHost
 func PrintBanner() {
 	gold := color.New(color.FgHiYellow, color.Bold).SprintFunc()
 	cyan := color.New(color.FgCyan).SprintFunc()
@@ -28,7 +28,7 @@ func PrintBanner() {
      ╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝                          `
 
 	fmt.Println(gold(banner))
-	fmt.Println(cyan("  🇸🇳  L'Art d'accueillir et propulser vos APIs Laravel en Production"))
+	fmt.Println(cyan("  Automated Infrastructure Provisioning & Deployment for Laravel"))
 	fmt.Println(gray(strings.Repeat("─", 74)))
 	fmt.Println()
 }

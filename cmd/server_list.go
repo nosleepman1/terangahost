@@ -12,7 +12,7 @@ import (
 
 var serverListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "Liste tous les serveurs VPS enregistrés et gérés par TerangaHost",
+	Short: "Liste tous les serveurs VPS enregistres et geres par TerangaHost",
 	Run: func(cmd *cobra.Command, args []string) {
 		runList()
 	},
@@ -31,12 +31,12 @@ func runList() {
 
 	servers, err := repo.List(context.Background())
 	if err != nil || len(servers) == 0 {
-		fmt.Println("Aucun serveur enregistré. Lancez d'abord :")
+		fmt.Println("Aucun serveur enregistre. Utilisez :")
 		fmt.Printf("  %s\n\n", cyan("terangahost server provision --name=mon-serveur --ip=..."))
 		return
 	}
 
-	fmt.Printf("📋 %s (%d)\n\n", gold("Serveurs TerangaHost Enregistrés"), len(servers))
+	fmt.Printf("%s (%d enregistres)\n\n", gold("Serveurs TerangaHost"), len(servers))
 	fmt.Printf("  %-18s %-16s %-10s %-8s %-12s %-10s\n", "NOM", "IP", "USER", "PHP", "DATABASE", "STATUS")
 	fmt.Println(color.HiBlackString("  ──────────────────────────────────────────────────────────────────────────"))
 

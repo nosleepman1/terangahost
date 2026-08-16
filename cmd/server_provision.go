@@ -33,8 +33,8 @@ var (
 var serverProvisionCmd = &cobra.Command{
 	Use:   "provision",
 	Short: "Provisionne un serveur VPS Ubuntu vierge en environnement Laravel de production",
-	Long: `Prend un VPS Ubuntu 22.04/24.04 vierge et automatise la sécurité, la création de swap,
-l'installation de PHP 8.x (14 extensions), Nginx, Supervisor, Composer, Certbot et Base de Données.`,
+	Long: `Configure un serveur Ubuntu 22.04/24.04: pare-feu UFW, Fail2ban, utilisateur deployer,
+swap 2GB, PHP 8.x (14 extensions), Nginx, Supervisor, Composer, Certbot et Base de donnees.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		runProvision()
 	},
@@ -43,12 +43,12 @@ l'installation de PHP 8.x (14 extensions), Nginx, Supervisor, Composer, Certbot 
 func init() {
 	serverProvisionCmd.Flags().StringVar(&provName, "name", "", "Nom unique du serveur (ex: dakar-prod)")
 	serverProvisionCmd.Flags().StringVar(&provIP, "ip", "", "Adresse IP publique du VPS (ex: 192.168.1.50)")
-	serverProvisionCmd.Flags().IntVar(&provPort, "port", 22, "Port SSH (défaut: 22)")
+	serverProvisionCmd.Flags().IntVar(&provPort, "port", 22, "Port SSH (defaut: 22)")
 	serverProvisionCmd.Flags().StringVar(&provUser, "user", "root", "Utilisateur initial pour la connexion SSH")
-	serverProvisionCmd.Flags().StringVar(&provKey, "ssh-key", "", "Chemin vers votre clé privée SSH (ex: ~/.ssh/id_ed25519)")
-	serverProvisionCmd.Flags().StringVar(&provPassword, "password", "", "Mot de passe SSH (optionnel si clé utilisée)")
-	serverProvisionCmd.Flags().StringVar(&provPHP, "php", "8.3", "Version de PHP à installer (8.2, 8.3, 8.4)")
-	serverProvisionCmd.Flags().StringVar(&provDatabase, "db", "mariadb", "Base de données ('mariadb', 'postgres', 'none')")
+	serverProvisionCmd.Flags().StringVar(&provKey, "ssh-key", "", "Chemin vers votre cle privee SSH (ex: ~/.ssh/id_ed25519)")
+	serverProvisionCmd.Flags().StringVar(&provPassword, "password", "", "Mot de passe SSH (optionnel si cle utilisee)")
+	serverProvisionCmd.Flags().StringVar(&provPHP, "php", "8.3", "Version de PHP a installer (8.2, 8.3, 8.4)")
+	serverProvisionCmd.Flags().StringVar(&provDatabase, "db", "mariadb", "Base de donnees ('mariadb', 'postgres', 'none')")
 	serverProvisionCmd.Flags().BoolVar(&provWithRedis, "redis", true, "Installer et activer le serveur Redis")
 
 	_ = serverProvisionCmd.MarkFlagRequired("ip")
@@ -61,7 +61,7 @@ func runProvision() {
 	yellow := color.New(color.FgYellow, color.Bold).SprintFunc()
 	red := color.New(color.FgRed, color.Bold).SprintFunc()
 
-	fmt.Printf("🚀 %s pour le serveur [%s] (%s)...\n\n", cyan("Démarrage du provisionnement TerangaHost"), provName, provIP)
+	fmt.Printf("[INFO] Initialisation du provisionnement pour le serveur [%s] (%s)...\n\n", provName, provIP)
 
 	// 1. Initialisation du Context et gestion de l'interruption (Ctrl+C)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -71,7 +71,7 @@ func runProvision() {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigChan
-		fmt.Printf("\n%s Interruption demandée. Arrêt sécurisé du pipeline...\n", yellow("⚠ [CTRL+C]"))
+		fmt.Printf("\n%s Interruption demandee. Arret securise du pipeline...\n", yellow("[SIGNAL: INTERRUPT]"))
 		cancel()
 	}()
 
@@ -79,11 +79,11 @@ func runProvision() {
 	logFile, logPath, err := logger.NewFileLogger("provision_" + provName)
 	if err == nil {
 		defer logFile.Close()
-		fmt.Printf("📝 Fichier de logs détaillé : %s\n\n", color.HiBlackString(logPath))
+		fmt.Printf("[LOG] Fichier journal detaille: %s\n\n", color.HiBlackString(logPath))
 	}
 
 	// 3. Connexion SSH
-	fmt.Printf("🔌 Connexion SSH vers %s@%s:%d...\n", provUser, provIP, provPort)
+	fmt.Printf("[SSH] Connexion vers %s@%s:%d...\n", provUser, provIP, provPort)
 	client, err := ssh.NewNativeSSHClient(ssh.ClientOptions{
 		Host:           provIP,
 		Port:           provPort,
@@ -93,7 +93,7 @@ func runProvision() {
 		Timeout:        20 * time.Second,
 	})
 	if err != nil {
-		fmt.Printf("\n%s Impossible de se connecter en SSH: %v\n", red("✖ ERREUR:"), err)
+		fmt.Printf("\n%s Impossible d'etablir la connexion SSH: %v\n", red("[ERROR]"), err)
 		return
 	}
 	defer client.Close()
@@ -101,19 +101,19 @@ func runProvision() {
 	runner := ssh.NewNativeSSHRunner(client)
 	defer runner.Close()
 
-	// 4. Détection du matériel (Hardware-Aware)
-	fmt.Printf("🔍 Analyse des spécifications matérielles du VPS...\n")
+	// 4. Detection du materiel (Hardware-Aware)
+	fmt.Printf("[HARDWARE] Analyse des specifications du serveur cible...\n")
 	spec, err := engine.DetectHardware(ctx, runner)
 	if err != nil {
-		fmt.Printf("  %s %v (continuation avec valeurs par défaut)\n", yellow("⚠"), err)
+		fmt.Printf("  %s %v (valeurs par defaut appliquees)\n", yellow("[WARN]"), err)
 		spec.TotalRAMMB = 1024
 		spec.CPUCores = 1
 	} else {
-		fmt.Printf("  ⚡ Détecté: %s | %d Mo RAM | %d vCPU | %d Go Disque libre\n\n",
+		fmt.Printf("  [HARDWARE] Detecte: %s | %d MB RAM | %d vCPU | %d GB Disque libre\n\n",
 			cyan(spec.OSVersion), spec.TotalRAMMB, spec.CPUCores, spec.DiskFreeGB)
 	}
 
-	// 5. Création de l'entité Server
+	// 5. Creation de l'entite Server
 	srv := &domain.Server{
 		ID:         fmt.Sprintf("srv_%d", time.Now().Unix()),
 		Name:       provName,
@@ -131,7 +131,7 @@ func runProvision() {
 		UpdatedAt:  time.Now(),
 	}
 
-	// 6. Construction et exécution du Pipeline
+	// 6. Construction et execution du Pipeline
 	listener := &engine.DefaultConsoleListener{Writer: os.Stdout}
 	pipeline := engine.NewPipeline(listener)
 
@@ -146,8 +146,8 @@ func runProvision() {
 
 	pipelineStart := time.Now()
 	if err := pipeline.Execute(ctx, runner, srv, logFile); err != nil {
-		fmt.Printf("\n%s Le provisionnement a échoué: %v\n", red("✖ ERREUR FATALE:"), err)
-		fmt.Printf("Consultez le fichier log pour plus de détails: %s\n", logPath)
+		fmt.Printf("\n%s Le provisionnement a echoue: %v\n", red("[FATAL ERROR]"), err)
+		fmt.Printf("Consultez le fichier journal: %s\n", logPath)
 		return
 	}
 
@@ -162,13 +162,13 @@ func runProvision() {
 	totalDuration := time.Since(pipelineStart).Round(time.Second)
 
 	fmt.Println(color.HiBlackString("──────────────────────────────────────────────────────────────────────────"))
-	fmt.Printf("🎉 %s\n", green("SERVEUR PROVISIONNÉ AVEC SUCCÈS POUR LARAVEL !"))
-	fmt.Printf("⏱  Temps total d'exécution : %s\n", cyan(totalDuration.String()))
-	fmt.Printf("👤 Utilisateur déployeur créé : %s\n", green("deployer"))
-	fmt.Printf("🌐 Serveur Web : %s\n", green("Nginx (Optimisé API + WebSockets)"))
-	fmt.Printf("🐘 Version PHP : %s (14 extensions + OPcache JIT)\n", green("PHP "+provPHP))
-	fmt.Printf("💾 Base de données : %s\n", green(provDatabase))
+	fmt.Printf("%s Serveur provisionne avec succes pour Laravel.\n", green("[SUCCESS]"))
+	fmt.Printf("  - Duree d'execution: %s\n", cyan(totalDuration.String()))
+	fmt.Printf("  - Utilisateur applicatif: %s\n", green("deployer"))
+	fmt.Printf("  - Serveur HTTP: %s\n", green("Nginx"))
+	fmt.Printf("  - Moteur PHP: %s (14 extensions + OPcache JIT)\n", green("PHP "+provPHP))
+	fmt.Printf("  - Base de donnees: %s\n", green(provDatabase))
 	fmt.Println(color.HiBlackString("──────────────────────────────────────────────────────────────────────────"))
-	fmt.Println("\n👉 Pour créer et déployer une API Laravel sur ce serveur :")
-	fmt.Printf("   %s\n\n", cyan("terangahost site create --server="+provName+" --domain=api.monprojet.sn"))
+	fmt.Println("\nConfiguration d'une API sur cette instance :")
+	fmt.Printf("  %s\n\n", cyan("terangahost site create --server="+provName+" --domain=api.domaine.com"))
 }

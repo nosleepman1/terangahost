@@ -16,15 +16,15 @@ var doctorServerName string
 
 var serverDoctorCmd = &cobra.Command{
 	Use:   "doctor",
-	Short: "Diagnostique la santé globale du serveur VPS (RAM, Disque, Services Nginx/PHP/DB)",
-	Long:  "Inspecte l'état des services, l'espace disque restant, la mémoire et les erreurs récentes.",
+	Short: "Diagnostique la sante globale du serveur VPS (RAM, Disque, Services Nginx/PHP/DB)",
+	Long:  "Inspecte l'etat des services, l'espace disque disponible, la memoire et les erreurs recentes.",
 	Run: func(cmd *cobra.Command, args []string) {
 		runDoctor()
 	},
 }
 
 func init() {
-	serverDoctorCmd.Flags().StringVar(&doctorServerName, "name", "", "Nom du serveur à inspecter")
+	serverDoctorCmd.Flags().StringVar(&doctorServerName, "name", "", "Nom du serveur a inspecter")
 	_ = serverDoctorCmd.MarkFlagRequired("name")
 }
 
@@ -39,17 +39,17 @@ func runDoctor() {
 
 	repo, err := storage.NewJSONRepository()
 	if err != nil {
-		fmt.Printf("%s %v\n", red("Erreur repository:"), err)
+		fmt.Printf("%s %v\n", red("[ERROR] Repository:"), err)
 		return
 	}
 
 	srv, err := repo.FindByName(ctx, doctorServerName)
 	if err != nil {
-		fmt.Printf("%s Serveur [%s] introuvable dans la base locale.\n", red("Erreur:"), doctorServerName)
+		fmt.Printf("%s Serveur [%s] introuvable dans la configuration locale.\n", red("[ERROR]"), doctorServerName)
 		return
 	}
 
-	fmt.Printf("🩺 %s [%s] (%s)...\n\n", cyan("Diagnostic de santé pour le serveur"), srv.Name, srv.IP)
+	fmt.Printf("[DOCTOR] Analyse du serveur [%s] (%s)...\n\n", srv.Name, srv.IP)
 
 	client, err := ssh.NewNativeSSHClient(ssh.ClientOptions{
 		Host:           srv.IP,
@@ -59,7 +59,6 @@ func runDoctor() {
 		Timeout:        10 * time.Second,
 	})
 	if err != nil {
-		// Repli sur l'utilisateur root si deployer n'est pas accessible
 		client, err = ssh.NewNativeSSHClient(ssh.ClientOptions{
 			Host:           srv.IP,
 			Port:           srv.SSHPort,
@@ -68,7 +67,7 @@ func runDoctor() {
 			Timeout:        10 * time.Second,
 		})
 		if err != nil {
-			fmt.Printf("%s Connexion SSH impossible: %v\n", red("✖"), err)
+			fmt.Printf("%s Echec de connexion SSH: %v\n", red("[ERROR]"), err)
 			return
 		}
 	}
@@ -78,7 +77,7 @@ func runDoctor() {
 	defer runner.Close()
 
 	// 1. Diagnostic des Services
-	fmt.Println(cyan("  [1/3] Statut des Services Système :"))
+	fmt.Println(cyan("  [1/3] Statut des Services Systeme :"))
 	services := []string{"nginx", fmt.Sprintf("php%s-fpm", srv.PHPVersion), "supervisor"}
 	if srv.Database == "mariadb" || srv.Database == "mysql" {
 		services = append(services, "mariadb")
@@ -91,34 +90,34 @@ func runDoctor() {
 		cmd := fmt.Sprintf("systemctl is-active %s", svc)
 		out, err := runner.RunSilent(ctx, cmd)
 		if err == nil && strings.TrimSpace(out) == "active" {
-			fmt.Printf("    ✔ Service %-15s : %s\n", svc, green("ACTIF (En cours d'exécution)"))
+			fmt.Printf("    [OK] Service %-15s : %s\n", svc, green("ACTIF"))
 		} else {
-			fmt.Printf("    ✖ Service %-15s : %s\n", svc, red("INACTIF / EN ERREUR"))
+			fmt.Printf("    [FAIL] Service %-15s : %s\n", svc, red("INACTIF / ERREUR"))
 		}
 	}
 
 	// 2. Diagnostic des Ressources
-	fmt.Printf("\n%s\n", cyan("  [2/3] État des Ressources Système :"))
-	diskCmd := "df -h / | awk 'NR==2 {print $4, \"disponible sur\", $2, \"(\"$5, \"utilisé)\"}'"
+	fmt.Printf("\n%s\n", cyan("  [2/3] Etat des Ressources :"))
+	diskCmd := "df -h / | awk 'NR==2 {print $4, \"disponible sur\", $2, \"(\"$5, \"utilise)\"}'"
 	diskOut, _ := runner.RunSilent(ctx, diskCmd)
-	fmt.Printf("    💾 Disque : %s\n", diskOut)
+	fmt.Printf("    Disque : %s\n", diskOut)
 
 	ramCmd := "free -h | awk '/^Mem:/{print $4, \"libre sur\", $2}'"
 	ramOut, _ := runner.RunSilent(ctx, ramCmd)
-	fmt.Printf("    🧠 RAM    : %s\n", ramOut)
+	fmt.Printf("    RAM    : %s\n", ramOut)
 
-	swapCmd := "free -h | awk '/^Swap:/{print $3, \"utilisé sur\", $2}'"
+	swapCmd := "free -h | awk '/^Swap:/{print $3, \"utilise sur\", $2}'"
 	swapOut, _ := runner.RunSilent(ctx, swapCmd)
-	fmt.Printf("    🔄 Swap   : %s\n", swapOut)
+	fmt.Printf("    Swap   : %s\n", swapOut)
 
 	// 3. Diagnostic des Logs d'erreurs récents
-	fmt.Printf("\n%s\n", cyan("  [3/3] Recherche d'erreurs Nginx récentes :"))
-	logCmd := "tail -n 5 /var/log/nginx/error.log 2>/dev/null || echo 'Aucun log disponible'"
+	fmt.Printf("\n%s\n", cyan("  [3/3] Journal d'erreurs Nginx :"))
+	logCmd := "tail -n 5 /var/log/nginx/error.log 2>/dev/null || echo 'Aucun log'"
 	logOut, _ := runner.RunSilent(ctx, logCmd)
 	if strings.TrimSpace(logOut) == "" || strings.Contains(logOut, "Aucun log") {
-		fmt.Printf("    ✔ %s\n", green("Aucune erreur critique récente dans Nginx"))
+		fmt.Printf("    [OK] %s\n", green("Aucune erreur critique recente dans Nginx"))
 	} else {
-		fmt.Printf("    %s\n%s\n", yellow("Dernières traces :"), color.HiBlackString(logOut))
+		fmt.Printf("    %s\n%s\n", yellow("[WARN] Dernieres traces :"), color.HiBlackString(logOut))
 	}
 
 	fmt.Println()
