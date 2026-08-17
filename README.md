@@ -108,11 +108,16 @@ terangahost/
 └── main.go
 ```
 
+
 ---
 
 ## Contributing
 
 Please review our [Contributing Guidelines](CONTRIBUTING.md) and [Code of Conduct](CODE_OF_CONDUCT.md) before submitting pull requests.
+
+---
+
+***Author [Abdallah DIOUF](https://github.com/nosleepman1)***
 
 ---
 
