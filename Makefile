@@ -1,29 +1,41 @@
-# TerangaHost - Automation Makefile
+# TerangaHost - Makefile
 
-BINARY_NAME=terangahost
+BINARY  := terangahost
+PKG     := github.com/nosleepman1/terangahost
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS := -s -w -X $(PKG)/cmd.Version=$(VERSION)
+PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
 
-.PHONY: all build clean test run lint deps
+.PHONY: all build build-all install test lint fmt deps clean
 
-all: build
+all: lint test build
 
 deps:
 	go mod download
 	go mod tidy
 
 build:
-	go build -ldflags="-s -w" -o bin/$(BINARY_NAME) main.go
+	CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o bin/$(BINARY) .
 
-build-windows:
-	GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o bin/$(BINARY_NAME).exe main.go
+build-all:
+	@for p in $(PLATFORMS); do \
+		os=$${p%/*}; arch=$${p#*/}; ext=""; [ "$$os" = windows ] && ext=".exe"; \
+		echo "-> bin/$(BINARY)-$$os-$$arch$$ext"; \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags="$(LDFLAGS)" -o bin/$(BINARY)-$$os-$$arch$$ext . || exit 1; \
+	done
 
-build-linux:
-	GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o bin/$(BINARY_NAME)-linux-amd64 main.go
-
-build-mac:
-	GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o bin/$(BINARY_NAME)-darwin-arm64 main.go
+install:
+	CGO_ENABLED=0 go install -trimpath -ldflags="$(LDFLAGS)" .
 
 test:
-	go test -v -race ./...
+	go test -race -count=1 ./...
+
+lint:
+	@test -z "$$(gofmt -l .)" || { echo "Fichiers non formatés :"; gofmt -l .; exit 1; }
+	go vet ./...
+
+fmt:
+	gofmt -w .
 
 clean:
 	rm -rf bin/
