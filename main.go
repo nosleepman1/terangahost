@@ -1,7 +1,11 @@
 package main
 
-import "github.com/teranga-host/terangahost/cmd"
+import (
+	"os"
+
+	"github.com/nosleepman1/terangahost/cmd"
+)
 
 func main() {
-	cmd.Execute()
+	os.Exit(cmd.Execute())
 }

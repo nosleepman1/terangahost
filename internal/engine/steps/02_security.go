@@ -5,60 +5,101 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/teranga-host/terangahost/internal/domain"
+	"github.com/nosleepman1/terangahost/internal/domain"
+	"github.com/nosleepman1/terangahost/internal/shell"
+	"github.com/nosleepman1/terangahost/templates"
 )
 
-// StepSecurity installe les outils essentiels, crée l'utilisateur 'deployer', configure UFW et Fail2ban
-type StepSecurity struct{}
-
-func (s *StepSecurity) ID() string {
-	return "02_security"
+// StepSecurity installe les paquets de base, crée l'utilisateur deployer (clé de connexion et
+// deploy key Git), configure UFW, Fail2ban et les mises à jour de sécurité automatiques.
+type StepSecurity struct {
+	// AuthorizedKey est la clé publique locale à autoriser pour le deployer (peut être vide).
+	AuthorizedKey string
 }
+
+func (s *StepSecurity) ID() string { return "02_security" }
 
 func (s *StepSecurity) Title() string {
-	return "Sécurisation du VPS (Création user 'deployer', Pare-feu UFW, Fail2ban)"
+	return "Sécurisation (utilisateur deployer, UFW, Fail2ban, mises à jour auto)"
 }
 
-func (s *StepSecurity) PreCheck(ctx context.Context, r domain.Runner, srv *domain.Server) (bool, error) {
-	out, err := r.RunSilent(ctx, "id -u deployer 2>/dev/null && ufw status | grep -q 'Status: active' && echo 'READY'")
-	if err == nil && strings.Contains(out, "READY") {
-		return true, nil
-	}
+// PreCheck : toujours exécutée pour garantir l'état de sécurité (commandes idempotentes).
+func (s *StepSecurity) PreCheck(context.Context, domain.Runner, *domain.Server) (bool, error) {
 	return false, nil
 }
 
+const autoUpgrades = `APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::AutocleanInterval "7";
+`
+
 func (s *StepSecurity) Execute(ctx context.Context, r domain.Runner, srv *domain.Server) error {
-	commands := []string{
-		// 1. Mise à jour de base & paquets requis
-		"apt-get update -y",
-		"apt-get install -y ufw fail2ban curl git unzip zip software-properties-common apt-transport-https ca-certificates gnupg lsb-release htop",
+	const home = "/home/" + domain.DeployUser
+	const auth = home + "/.ssh/authorized_keys"
 
-		// 2. Création de l'utilisateur deployer et configuration de son home
-		"id -u deployer >/dev/null 2>&1 || useradd -m -s /bin/bash -g www-data deployer",
-		"mkdir -p /home/deployer/.ssh",
-		"chmod 700 /home/deployer/.ssh",
-
-		// 3. Copie des clés SSH autorisées de root vers deployer
-		"[ -f /root/.ssh/authorized_keys ] && cp /root/.ssh/authorized_keys /home/deployer/.ssh/authorized_keys && chmod 600 /home/deployer/.ssh/authorized_keys && chown -R deployer:www-data /home/deployer/.ssh || true",
-
-		// 4. Configuration du Pare-feu UFW (Ports 22, 80, 443 uniquement)
-		"ufw default deny incoming",
-		"ufw default allow outgoing",
-		fmt.Sprintf("ufw allow %d/tcp comment 'SSH'", srv.SSHPort),
-		"ufw allow 80/tcp comment 'HTTP'",
-		"ufw allow 443/tcp comment 'HTTPS'",
-		"echo 'y' | ufw enable",
-
-		// 5. Activation de Fail2ban
-		"systemctl enable fail2ban",
-		"systemctl restart fail2ban",
+	if err := runAll(ctx, r, "installation des paquets de base",
+		aptUpdate(),
+		aptInstall("ufw", "fail2ban", "python3-systemd", "curl", "git", "unzip", "zip", "acl", "software-properties-common",
+			"ca-certificates", "gnupg", "lsb-release", "htop", "psmisc", "unattended-upgrades", "cron"),
+	); err != nil {
+		return err
 	}
 
-	for _, cmd := range commands {
-		if _, err := r.RunSilent(ctx, cmd); err != nil {
-			return fmt.Errorf("erreur sécurisation (%s): %w", cmd, err)
+	if err := runAll(ctx, r, "création de l'utilisateur deployer",
+		"id -u deployer >/dev/null 2>&1 || useradd -m -s /bin/bash -g www-data deployer",
+		"install -d -m 700 -o deployer -g www-data "+home+"/.ssh",
+		"touch "+auth,
+		fmt.Sprintf(`h=$(getent passwd %s | cut -d: -f6); if [ -n "$h" ] && [ -f "$h/.ssh/authorized_keys" ] && [ "$h" != %s ]; then cat "$h/.ssh/authorized_keys" >> %s; fi`,
+			shell.Quote(srv.AdminUser), home, auth),
+	); err != nil {
+		return err
+	}
+	if key := strings.TrimSpace(s.AuthorizedKey); key != "" {
+		if _, err := r.RunWithInput(ctx, "cat >> "+auth, []byte("\n"+key+"\n")); err != nil {
+			return fmt.Errorf("ajout de la clé SSH du deployer: %w", err)
 		}
 	}
+	if err := runAll(ctx, r, "clés SSH du deployer",
+		fmt.Sprintf("awk 'NF && !seen[$0]++' %[1]s > %[1]s.tmp && mv -f %[1]s.tmp %[1]s", auth),
+		"chmod 600 "+auth,
+		"[ -f "+home+"/.ssh/id_ed25519 ] || runuser -u deployer -- ssh-keygen -q -t ed25519 -N '' -C "+shell.Quote("deployer@"+srv.Name)+" -f "+home+"/.ssh/id_ed25519",
+		"[ -f "+home+"/.ssh/config ] || printf 'Host *\\n    StrictHostKeyChecking accept-new\\n' > "+home+"/.ssh/config",
+		"chmod 600 "+home+"/.ssh/config",
+		"chown -R deployer:www-data "+home+"/.ssh",
+	); err != nil {
+		return err
+	}
+	if key, err := r.RunSilent(ctx, "cat "+home+"/.ssh/id_ed25519.pub"); err == nil {
+		srv.DeployKey = strings.TrimSpace(key)
+	}
 
-	return nil
+	port := srv.SSHPort
+	if port == 0 {
+		port = 22
+	}
+	if err := runAll(ctx, r, "pare-feu UFW",
+		"ufw default deny incoming",
+		"ufw default allow outgoing",
+		fmt.Sprintf("ufw allow %d/tcp", port),
+		"ufw allow 80/tcp",
+		"ufw allow 443/tcp",
+		"ufw --force enable",
+	); err != nil {
+		return err
+	}
+
+	jail, err := templates.Render("fail2ban/jail.conf.tmpl", map[string]any{"SSHPort": port})
+	if err != nil {
+		return err
+	}
+	if err := r.Upload(ctx, jail, "/etc/fail2ban/jail.d/terangahost.conf", 0o644); err != nil {
+		return err
+	}
+	if err := r.Upload(ctx, []byte(autoUpgrades), "/etc/apt/apt.conf.d/20auto-upgrades", 0o644); err != nil {
+		return err
+	}
+	return runAll(ctx, r, "Fail2ban",
+		"systemctl enable fail2ban >/dev/null 2>&1 || true",
+		"systemctl restart fail2ban",
+	)
 }

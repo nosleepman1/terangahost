@@ -6,79 +6,65 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/teranga-host/terangahost/internal/domain"
+	"github.com/nosleepman1/terangahost/internal/domain"
 )
 
-// DetectHardware interroge le système distant pour extraire les caractéristiques matérielles réelles
+func atoi(s string) (int, bool) {
+	v, err := strconv.Atoi(strings.TrimSpace(s))
+	return v, err == nil
+}
+
+// DetectHardware interroge le serveur pour extraire ses caractéristiques matérielles réelles.
 func DetectHardware(ctx context.Context, runner domain.Runner) (domain.HardwareSpec, error) {
 	var spec domain.HardwareSpec
-
-	// 1. RAM totale en Mo
-	ramCmd := "free -m | awk '/^Mem:/{print $2}'"
-	ramOut, err := runner.RunSilent(ctx, ramCmd)
-	if err == nil {
-		if ram, err := strconv.Atoi(strings.TrimSpace(ramOut)); err == nil {
-			spec.TotalRAMMB = ram
+	read := func(cmd string) string {
+		out, err := runner.RunSilent(ctx, cmd)
+		if err != nil {
+			return ""
 		}
+		return strings.TrimSpace(out)
 	}
 
-	// 2. RAM libre en Mo
-	freeRamCmd := "free -m | awk '/^Mem:/{print $4+$6+$7}'" // Free + buff/cache
-	freeRamOut, err := runner.RunSilent(ctx, freeRamCmd)
-	if err == nil {
-		if free, err := strconv.Atoi(strings.TrimSpace(freeRamOut)); err == nil {
-			spec.FreeRAMMB = free
-		}
+	if v, ok := atoi(read("free -m | awk '/^Mem:/{print $2}'")); ok {
+		spec.TotalRAMMB = v
 	}
-
-	// 3. Swap existant en Mo
-	swapCmd := "free -m | awk '/^Swap:/{print $2}'"
-	swapOut, err := runner.RunSilent(ctx, swapCmd)
-	if err == nil {
-		if swap, err := strconv.Atoi(strings.TrimSpace(swapOut)); err == nil {
-			spec.TotalSwapMB = swap
-			spec.HasSwap = swap > 500
-		}
+	if v, ok := atoi(read("free -m | awk '/^Mem:/{print $7}'")); ok {
+		spec.FreeRAMMB = v // colonne "available"
 	}
-
-	// 4. Nombre de cœurs CPU
-	cpuCmd := "nproc"
-	cpuOut, err := runner.RunSilent(ctx, cpuCmd)
-	if err == nil {
-		if cpu, err := strconv.Atoi(strings.TrimSpace(cpuOut)); err == nil {
-			spec.CPUCores = cpu
-		}
+	if v, ok := atoi(read("free -m | awk '/^Swap:/{print $2}'")); ok {
+		spec.TotalSwapMB = v
+		spec.HasSwap = v >= 1000
+	}
+	if v, ok := atoi(read("nproc")); ok {
+		spec.CPUCores = v
 	}
 	if spec.CPUCores == 0 {
 		spec.CPUCores = 1
 	}
-
-	// 5. Espace disque restant en Go
-	diskCmd := "df -BG / | awk 'NR==2 {gsub(\"G\", \"\", $4); print $4}'"
-	diskOut, err := runner.RunSilent(ctx, diskCmd)
-	if err == nil {
-		if disk, err := strconv.Atoi(strings.TrimSpace(diskOut)); err == nil {
-			spec.DiskFreeGB = disk
-		}
+	if f := strings.Fields(read("df -BG --output=size,avail / | tail -n 1 | tr -d G")); len(f) == 2 {
+		spec.DiskTotalGB, _ = atoi(f[0])
+		spec.DiskFreeGB, _ = atoi(f[1])
 	}
-
-	// 6. Version d'OS
-	osCmd := "lsb_release -ds 2>/dev/null || cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"'"
-	osOut, err := runner.RunSilent(ctx, osCmd)
-	if err == nil {
-		spec.OSVersion = strings.TrimSpace(osOut)
-	}
-
-	// 7. Architecture
-	archCmd := "uname -m"
-	archOut, err := runner.RunSilent(ctx, archCmd)
-	if err == nil {
-		spec.Architecture = strings.TrimSpace(archOut)
-	}
+	spec.OSVersion = read(`. /etc/os-release && echo "$PRETTY_NAME"`)
+	spec.Architecture = read("uname -m")
 
 	if spec.TotalRAMMB == 0 {
 		return spec, fmt.Errorf("impossible de détecter la mémoire RAM du serveur")
 	}
-
 	return spec, nil
+}
+
+// DetectIPv6 retourne les adresses IPv6 globales du serveur (pour la vérification DNS AAAA).
+func DetectIPv6(ctx context.Context, runner domain.Runner) []string {
+	out, err := runner.RunSilent(ctx, "ip -6 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1")
+	if err != nil {
+		return nil
+	}
+	var ips []string
+	for _, l := range strings.Split(out, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			ips = append(ips, l)
+		}
+	}
+	return ips
 }

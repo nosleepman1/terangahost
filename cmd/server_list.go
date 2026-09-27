@@ -4,56 +4,60 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"text/tabwriter"
 
-	"github.com/fatih/color"
+	"github.com/nosleepman1/terangahost/internal/domain"
+	"github.com/nosleepman1/terangahost/internal/ui"
 	"github.com/spf13/cobra"
-	"github.com/teranga-host/terangahost/internal/platform/storage"
 )
 
 var serverListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "Liste tous les serveurs VPS enregistres et geres par TerangaHost",
-	Run: func(cmd *cobra.Command, args []string) {
-		runList()
+	Short: "Liste les serveurs enregistrés",
+	RunE: func(*cobra.Command, []string) error {
+		store, err := openStore()
+		if err != nil {
+			return err
+		}
+		ctx := context.Background()
+		servers, err := store.ListServers(ctx)
+		if err != nil {
+			return err
+		}
+		if len(servers) == 0 {
+			ui.Info("Aucun serveur enregistré. Pour commencer :")
+			ui.Hint("terangahost server provision --name=prod --ip=203.0.113.10")
+			return nil
+		}
+		sites, err := store.ListSites(ctx, "")
+		if err != nil {
+			return err
+		}
+		count := map[string]int{}
+		for _, s := range sites {
+			count[s.ServerID]++
+		}
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "NOM\tIP\tADMIN\tPHP\tBASE\tREDIS\tSITES\tSTATUT")
+		for _, s := range servers {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%v\t%d\t%s\n", s.Name, s.IP, s.AdminUser, s.PHPVersion, s.Database, s.WithRedis, count[s.ID], status(s.Status))
+		}
+		return w.Flush()
 	},
 }
 
-func runList() {
-	cyan := color.New(color.FgCyan, color.Bold).SprintFunc()
-	green := color.New(color.FgGreen, color.Bold).SprintFunc()
-	gold := color.New(color.FgHiYellow, color.Bold).SprintFunc()
-
-	repo, err := storage.NewJSONRepository()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Erreur repository: %v\n", err)
-		return
+func status(s string) string {
+	switch s {
+	case domain.StatusReady:
+		return "prêt"
+	case domain.StatusError:
+		return "erreur"
+	case domain.StatusProvisioning:
+		return "incomplet"
 	}
+	return s
+}
 
-	servers, err := repo.List(context.Background())
-	if err != nil || len(servers) == 0 {
-		fmt.Println("Aucun serveur enregistre. Utilisez :")
-		fmt.Printf("  %s\n\n", cyan("terangahost server provision --name=mon-serveur --ip=..."))
-		return
-	}
-
-	fmt.Printf("%s (%d enregistres)\n\n", gold("Serveurs TerangaHost"), len(servers))
-	fmt.Printf("  %-18s %-16s %-10s %-8s %-12s %-10s\n", "NOM", "IP", "USER", "PHP", "DATABASE", "STATUS")
-	fmt.Println(color.HiBlackString("  ──────────────────────────────────────────────────────────────────────────"))
-
-	for _, s := range servers {
-		statusFormatted := green(s.Status)
-		if s.Status != "ready" {
-			statusFormatted = color.YellowString(s.Status)
-		}
-
-		fmt.Printf("  %-18s %-16s %-10s %-8s %-12s %-10s\n",
-			cyan(s.Name),
-			s.IP,
-			s.DeployUser,
-			s.PHPVersion,
-			s.Database,
-			statusFormatted,
-		)
-	}
-	fmt.Println()
+func init() {
+	serverCmd.AddCommand(serverListCmd)
 }

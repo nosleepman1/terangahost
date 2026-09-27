@@ -1,3 +1,4 @@
+; Managed by TerangaHost - pool dedie au site {{ .Domain }}
 [{{ .ID }}]
 user = deployer
 group = www-data
@@ -15,6 +16,8 @@ pm.max_spare_servers = {{ .MaxSpareServers }}
 pm.max_requests = 1000
 
 request_terminate_timeout = 60s
+request_slowlog_timeout = 5s
+slowlog = /var/log/php{{ .PHPVersion }}-fpm-{{ .ID }}-slow.log
 rlimit_files = 65536
 rlimit_core = 0
 
@@ -23,5 +26,5 @@ chdir = /
 php_admin_value[memory_limit] = 256M
 php_admin_value[upload_max_filesize] = 64M
 php_admin_value[post_max_size] = 64M
-php_admin_value[error_log] = /var/log/nginx/{{ .ID }}-php-error.log
+php_admin_value[error_log] = {{ .Directory }}/shared/storage/logs/php-fpm-error.log
 php_admin_flag[log_errors] = on

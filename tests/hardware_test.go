@@ -3,45 +3,36 @@ package tests
 import (
 	"testing"
 
-	"github.com/teranga-host/terangahost/internal/domain"
+	"github.com/nosleepman1/terangahost/internal/domain"
 )
 
 func TestHardwareCalculations(t *testing.T) {
-	t.Run("Low RAM VPS (1GB) calculation", func(t *testing.T) {
-		spec := domain.HardwareSpec{
-			TotalRAMMB: 1024,
-			CPUCores:   1,
+	cases := []struct {
+		ram         int
+		low         bool
+		bufferPool  int
+		fpmChildren int
+		perSiteOf3  int
+	}{
+		{ram: 1024, low: true, bufferPool: 128, fpmChildren: 8, perSiteOf3: 3},
+		{ram: 2048, low: false, bufferPool: 256, fpmChildren: 22, perSiteOf3: 7},
+		{ram: 4096, low: false, bufferPool: 1024, fpmChildren: 42, perSiteOf3: 14},
+		{ram: 16384, low: false, bufferPool: 6553, fpmChildren: 147, perSiteOf3: 49},
+		{ram: 0, low: true, bufferPool: 128, fpmChildren: 8, perSiteOf3: 3}, // RAM inconnue : valeurs prudentes
+	}
+	for _, c := range cases {
+		h := domain.HardwareSpec{TotalRAMMB: c.ram}
+		if got := h.IsLowMemory(); got != c.low {
+			t.Errorf("%d Mo: IsLowMemory = %v", c.ram, got)
 		}
-
-		if !spec.IsLowMemory() {
-			t.Errorf("Expected IsLowMemory to be true for 1024MB RAM")
+		if got := h.TunedMySQLBufferPoolMB(); got != c.bufferPool {
+			t.Errorf("%d Mo: buffer pool = %d, attendu %d", c.ram, got, c.bufferPool)
 		}
-
-		if pool := spec.TunedMySQLBufferPoolMB(); pool != 128 {
-			t.Errorf("Expected MySQL Buffer Pool to be 128MB, got %dMB", pool)
+		if got := h.TunedFpmMaxChildren(); got != c.fpmChildren {
+			t.Errorf("%d Mo: FPM max children = %d, attendu %d", c.ram, got, c.fpmChildren)
 		}
-
-		if fpm := spec.TunedFpmMaxChildren(); fpm != 5 {
-			t.Errorf("Expected FPM Max Children to be 5, got %d", fpm)
+		if got := h.FpmMaxChildrenPerSite(3); got != c.perSiteOf3 {
+			t.Errorf("%d Mo: FPM par site (3 sites) = %d, attendu %d", c.ram, got, c.perSiteOf3)
 		}
-	})
-
-	t.Run("Medium RAM VPS (4GB) calculation", func(t *testing.T) {
-		spec := domain.HardwareSpec{
-			TotalRAMMB: 4096,
-			CPUCores:   2,
-		}
-
-		if spec.IsLowMemory() {
-			t.Errorf("Expected IsLowMemory to be false for 4096MB RAM")
-		}
-
-		if pool := spec.TunedMySQLBufferPoolMB(); pool != 1024 {
-			t.Errorf("Expected MySQL Buffer Pool to be 1024MB, got %dMB", pool)
-		}
-
-		if fpm := spec.TunedFpmMaxChildren(); fpm != 25 {
-			t.Errorf("Expected FPM Max Children to be 25, got %d", fpm)
-		}
-	})
+	}
 }
