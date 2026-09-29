@@ -1,0 +1,16 @@
+; Managed by TerangaHost - serveur Laravel Reverb de {{ .Domain }}
+[program:{{ .ID }}-reverb]
+command=/bin/bash -c 'until [ -f {{ .Directory }}/current/artisan ]; do sleep 10; done; exec php{{ .PHPVersion }} {{ .Directory }}/current/artisan reverb:start --host=127.0.0.1 --port={{ .ReverbPort }}'
+directory={{ .Directory }}
+autostart=true
+autorestart=true
+startsecs=1
+stopasgroup=true
+killasgroup=true
+user=deployer
+minfds=10000
+redirect_stderr=true
+stdout_logfile=/var/log/supervisor/{{ .ID }}-reverb.log
+stdout_logfile_maxbytes=10MB
+stdout_logfile_backups=5
+stopwaitsecs=30

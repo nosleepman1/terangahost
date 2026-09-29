@@ -1,47 +1,74 @@
 package domain
 
-// HardwareSpec représente les caractéristiques physiques réelles détectées sur le VPS
+// HardwareSpec représente les caractéristiques physiques réelles détectées sur le VPS.
 type HardwareSpec struct {
-	TotalRAMMB   int    `json:"total_ram_mb"`   // Ex: 1024 (1 Go) ou 4096 (4 Go)
+	TotalRAMMB   int    `json:"total_ram_mb"`
 	FreeRAMMB    int    `json:"free_ram_mb"`
-	CPUCores     int    `json:"cpu_cores"`      // Ex: 1, 2, 4
-	TotalSwapMB  int    `json:"total_swap_mb"`  // Ex: 2048
-	HasSwap      bool   `json:"has_swap"`       // true si swap > 500Mo
-	DiskTotalGB  int    `json:"disk_total_gb"`  // Ex: 25
-	DiskFreeGB   int    `json:"disk_free_gb"`   // Ex: 18
-	OSVersion    string `json:"os_version"`     // Ex: "Ubuntu 24.04 LTS"
-	Architecture string `json:"architecture"`   // Ex: "x86_64" ou "aarch64"
+	CPUCores     int    `json:"cpu_cores"`
+	TotalSwapMB  int    `json:"total_swap_mb"`
+	HasSwap      bool   `json:"has_swap"`
+	DiskTotalGB  int    `json:"disk_total_gb"`
+	DiskFreeGB   int    `json:"disk_free_gb"`
+	OSVersion    string `json:"os_version"`
+	Architecture string `json:"architecture"`
 }
 
-// IsLowMemory renvoie true si le serveur a 1 Go ou moins de RAM
+// Consommation mémoire moyenne d'un worker PHP-FPM Laravel et mémoire réservée au système.
+const (
+	fpmWorkerMB  = 64
+	systemBaseMB = 384
+)
+
+func (h HardwareSpec) ramMB() int {
+	if h.TotalRAMMB <= 0 {
+		return 1024
+	}
+	return h.TotalRAMMB
+}
+
+// IsLowMemory renvoie true si le serveur a environ 1 Go de RAM ou moins.
 func (h HardwareSpec) IsLowMemory() bool {
-	return h.TotalRAMMB <= 1200
+	return h.ramMB() <= 1200
 }
 
-// TunedMySQLBufferPoolMB calcule dynamiquement la taille idéale du buffer MySQL
+// TunedMySQLBufferPoolMB calcule la taille du buffer pool InnoDB adaptée à la RAM réelle.
 func (h HardwareSpec) TunedMySQLBufferPoolMB() int {
-	if h.TotalRAMMB <= 1200 {
-		return 128 // Protection maximale contre l'OOM sur 1GB VPS
-	}
-	if h.TotalRAMMB <= 2400 {
+	ram := h.ramMB()
+	switch {
+	case ram <= 1200:
+		return 128 // protection contre l'OOM killer sur un VPS 1 Go
+	case ram <= 2400:
 		return 256
+	case ram <= 4800:
+		return 1024
+	default:
+		return ram * 40 / 100
 	}
-	if h.TotalRAMMB <= 4800 {
-		return 1024 // 1 Go sur un VPS 4 Go
-	}
-	return (h.TotalRAMMB * 40) / 100 // 40% de la RAM sur les gros serveurs
 }
 
-// TunedFpmMaxChildren calcule le nombre de processus FPM recommandés
+// TunedFpmMaxChildren calcule le budget total de processus PHP-FPM du serveur :
+// la RAM restante après le système et la base de données, divisée par la consommation d'un worker.
 func (h HardwareSpec) TunedFpmMaxChildren() int {
-	if h.TotalRAMMB <= 1200 {
-		return 5
+	available := h.ramMB() - systemBaseMB - h.TunedMySQLBufferPoolMB()
+	n := available / fpmWorkerMB
+	if n < 4 {
+		n = 4
 	}
-	if h.TotalRAMMB <= 2400 {
-		return 12
+	if n > 256 {
+		n = 256
 	}
-	if h.TotalRAMMB <= 4800 {
-		return 25
+	return n
+}
+
+// FpmMaxChildrenPerSite répartit le budget FPM entre les sites hébergés pour éviter
+// qu'un pic de charge simultané sur plusieurs sites ne dépasse la mémoire disponible.
+func (h HardwareSpec) FpmMaxChildrenPerSite(sites int) int {
+	if sites < 1 {
+		sites = 1
 	}
-	return (h.TotalRAMMB / 100)
+	n := h.TunedFpmMaxChildren() / sites
+	if n < 3 {
+		n = 3
+	}
+	return n
 }

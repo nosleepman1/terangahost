@@ -3,91 +3,74 @@ package steps
 import (
 	"context"
 	"fmt"
-	"strings"
 
-	"github.com/teranga-host/terangahost/internal/domain"
+	"github.com/nosleepman1/terangahost/internal/domain"
+	"github.com/nosleepman1/terangahost/templates"
 )
 
-// StepPHP installe le PPA de Ondřej Surý, PHP-FPM, les 14 extensions indispensables de Laravel, et optimise php.ini
-type StepPHP struct{}
-
-func (s *StepPHP) ID() string {
-	return "04_php"
+// PHPExtensions liste les extensions installées pour Laravel 10/11/12 (Horizon, Reverb, Pulse...).
+var PHPExtensions = []string{
+	"cli", "fpm", "common", "mysql", "pgsql", "sqlite3", "redis",
+	"bcmath", "curl", "mbstring", "xml", "zip", "intl", "gd", "soap",
+	"readline", "imagick", "opcache",
 }
+
+// PHPPackages retourne les paquets APT d'une version PHP.
+func PHPPackages(version string) []string {
+	pkgs := make([]string, len(PHPExtensions))
+	for i, ext := range PHPExtensions {
+		pkgs[i] = fmt.Sprintf("php%s-%s", version, ext)
+	}
+	return pkgs
+}
+
+// StepPHP installe PHP-FPM depuis le PPA ondrej/php avec les extensions Laravel et un php.ini optimisé.
+type StepPHP struct {
+	Version string
+}
+
+func (s *StepPHP) ID() string { return "04_php_" + s.Version }
 
 func (s *StepPHP) Title() string {
-	return "Installation de PHP (PPA Ondřej Surý, PHP-FPM, 14 Extensions & OPcache/JIT)"
+	return fmt.Sprintf("PHP %s-FPM, %d extensions Laravel, OPcache et JIT", s.Version, len(PHPExtensions))
 }
 
-func (s *StepPHP) PreCheck(ctx context.Context, r domain.Runner, srv *domain.Server) (bool, error) {
-	checkCmd := fmt.Sprintf("php%s -v 2>/dev/null && php%s -m | grep -q 'bcmath' && echo 'INSTALLED'", srv.PHPVersion, srv.PHPVersion)
-	out, err := r.RunSilent(ctx, checkCmd)
-	if err == nil && strings.Contains(out, "INSTALLED") {
-		return true, nil
-	}
-	return false, nil
+func (s *StepPHP) iniPath() string {
+	return fmt.Sprintf("/etc/php/%s/mods-available/terangahost.ini", s.Version)
 }
 
-func (s *StepPHP) Execute(ctx context.Context, r domain.Runner, srv *domain.Server) error {
-	v := srv.PHPVersion
-	if v == "" {
-		v = "8.3"
+func (s *StepPHP) PreCheck(ctx context.Context, r domain.Runner, _ *domain.Server) (bool, error) {
+	ini, err := templates.Static("php/laravel.ini")
+	if err != nil {
+		return false, err
+	}
+	return packagesInstalled(ctx, r, PHPPackages(s.Version)...) && hasContent(ctx, r, s.iniPath(), ini), nil
+}
+
+func (s *StepPHP) Execute(ctx context.Context, r domain.Runner, _ *domain.Server) error {
+	v := s.Version
+	if err := runAll(ctx, r, "dépôt PHP ondrej/php",
+		"grep -rqs 'ondrej/php' /etc/apt/sources.list.d/ || add-apt-repository -y ppa:ondrej/php",
+		aptUpdate(),
+	); err != nil {
+		return err
+	}
+	if err := runAll(ctx, r, "installation de PHP "+v, aptInstall(PHPPackages(v)...)); err != nil {
+		return err
 	}
 
-	// 1. Ajout du PPA Ondřej Surý
-	setupPpa := []string{
-		"add-apt-repository -y ppa:ondrej/php",
-		"apt-get update -y",
+	ini, err := templates.Static("php/laravel.ini")
+	if err != nil {
+		return err
 	}
-	for _, cmd := range setupPpa {
-		if _, err := r.RunSilent(ctx, cmd); err != nil {
-			return fmt.Errorf("erreur PPA PHP: %w", err)
-		}
+	if err := r.Upload(ctx, ini, s.iniPath(), 0o644); err != nil {
+		return err
 	}
-
-	// 2. Les 14 extensions obligatoires pour Laravel 11/12 (Reverb, Horizon, Pulse)
-	extensions := []string{
-		"cli", "fpm", "common", "mysql", "pgsql", "sqlite3", "redis",
-		"bcmath", "curl", "mbstring", "xml", "zip", "intl", "gd", "soap",
-		"readline", "imagick", "opcache",
-	}
-
-	packages := make([]string, len(extensions))
-	for i, ext := range extensions {
-		packages[i] = fmt.Sprintf("php%s-%s", v, ext)
-	}
-
-	installCmd := fmt.Sprintf("apt-get install -y %s", strings.Join(packages, " "))
-	if _, err := r.RunSilent(ctx, installCmd); err != nil {
-		return fmt.Errorf("erreur installation paquets PHP %s: %w", v, err)
-	}
-
-	// 3. Optimisation de php.ini (CLI et FPM) pour les APIs Laravel
-	phpIniOptimizations := `
-upload_max_filesize = 64M
-post_max_size = 64M
-memory_limit = 256M
-max_execution_time = 60
-date.timezone = UTC
-opcache.enable = 1
-opcache.enable_cli = 1
-opcache.memory_consumption = 128
-opcache.interned_strings_buffer = 16
-opcache.max_accelerated_files = 10000
-opcache.validate_timestamps = 1
-opcache.revalidate_freq = 0
-opcache.save_comments = 1
-opcache.jit = tracing
-opcache.jit_buffer_size = 32M
-`
-	iniPath := fmt.Sprintf("/etc/php/%s/mods-available/99-terangahost.ini", v)
-	if err := r.Upload(ctx, []byte(phpIniOptimizations), iniPath, 0644); err != nil {
-		return fmt.Errorf("impossible de téléverser le php.ini optimisé: %w", err)
-	}
-
-	// Activer le module de configuration pour FPM et CLI
-	_, _ = r.RunSilent(ctx, fmt.Sprintf("phpenmod -v %s 99-terangahost", v))
-	_, _ = r.RunSilent(ctx, fmt.Sprintf("systemctl restart php%s-fpm", v))
-
-	return nil
+	return runAll(ctx, r, "configuration de PHP "+v,
+		// Nettoyage du module des versions précédentes de TerangaHost.
+		fmt.Sprintf("phpdismod -v %[1]s 99-terangahost >/dev/null 2>&1 || true; rm -f /etc/php/%[1]s/mods-available/99-terangahost.ini", v),
+		fmt.Sprintf("phpenmod -v %s terangahost", v),
+		fmt.Sprintf("systemctl enable php%s-fpm >/dev/null 2>&1 || true", v),
+		fmt.Sprintf("php-fpm%[1]s -t >/dev/null 2>&1 && systemctl restart php%[1]s-fpm", v),
+	)
 }

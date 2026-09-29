@@ -2,77 +2,60 @@ package steps
 
 import (
 	"context"
-	"fmt"
-	"strings"
 
-	"github.com/teranga-host/terangahost/internal/domain"
+	"github.com/nosleepman1/terangahost/internal/domain"
+	"github.com/nosleepman1/terangahost/templates"
 )
 
-// StepTools installe Composer globalement, Supervisor pour les workers de queue, Certbot et Logrotate
+// StepTools installe Composer (signature vérifiée), Supervisor, Certbot et la rotation des logs.
 type StepTools struct{}
 
-func (s *StepTools) ID() string {
-	return "06_tools"
+func (s *StepTools) ID() string    { return "06_tools" }
+func (s *StepTools) Title() string { return "Composer, Supervisor, Certbot et rotation des logs" }
+
+const renewHookPath = "/etc/letsencrypt/renewal-hooks/deploy/terangahost-reload-nginx"
+const renewHook = "#!/bin/sh\n# Managed by TerangaHost : recharge Nginx après chaque renouvellement de certificat\nsystemctl reload nginx\n"
+
+// Installation officielle de Composer avec vérification de la signature SHA-384 de l'installeur.
+// Composer est toujours installé dans /usr/local/bin, chemin utilisé par le script de déploiement.
+const composerInstall = `if [ ! -x /usr/local/bin/composer ]; then
+  set -e
+  EXPECTED=$(curl -fsSL https://composer.github.io/installer.sig)
+  curl -fsSL https://getcomposer.org/installer -o /tmp/composer-setup.php
+  ACTUAL=$(php -r "echo hash_file('sha384', '/tmp/composer-setup.php');")
+  if [ "$EXPECTED" != "$ACTUAL" ]; then rm -f /tmp/composer-setup.php; echo "Signature de l'installeur Composer invalide" >&2; exit 1; fi
+  php /tmp/composer-setup.php --quiet --install-dir=/usr/local/bin --filename=composer
+  rm -f /tmp/composer-setup.php
+fi`
+
+func (s *StepTools) PreCheck(ctx context.Context, r domain.Runner, _ *domain.Server) (bool, error) {
+	lr, err := templates.Static("logrotate/terangahost.conf")
+	if err != nil {
+		return false, err
+	}
+	return packagesInstalled(ctx, r, "supervisor", "certbot") &&
+		ready(ctx, r, "[ -x /usr/local/bin/composer ] && [ -x "+renewHookPath+" ]") &&
+		hasContent(ctx, r, "/etc/logrotate.d/terangahost", lr), nil
 }
 
-func (s *StepTools) Title() string {
-	return "Installation de Composer, Supervisor (Queues Laravel), Certbot & Logrotate"
-}
-
-func (s *StepTools) PreCheck(ctx context.Context, r domain.Runner, srv *domain.Server) (bool, error) {
-	out, err := r.RunSilent(ctx, "composer --version 2>/dev/null && supervisorctl version 2>/dev/null && echo 'READY'")
-	if err == nil && strings.Contains(out, "READY") {
-		return true, nil
-	}
-	return false, nil
-}
-
-func (s *StepTools) Execute(ctx context.Context, r domain.Runner, srv *domain.Server) error {
-	commands := []string{
-		// 1. Installation de Supervisor et Certbot
-		"apt-get install -y supervisor certbot python3-certbot-nginx",
-		"systemctl enable supervisor",
-		"systemctl start supervisor",
-
-		// 2. Installation de Composer 2 (Officiel)
-		"curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer",
-		"chmod +x /usr/local/bin/composer",
-
-		// 3. Configuration du dossier racine /var/www
-		"mkdir -p /var/www",
-		"chown -R deployer:www-data /var/www",
-		"chmod -R 775 /var/www",
+func (s *StepTools) Execute(ctx context.Context, r domain.Runner, _ *domain.Server) error {
+	if err := runAll(ctx, r, "installation des outils",
+		aptInstall("supervisor", "certbot"),
+		"systemctl enable --now supervisor",
+		composerInstall,
+		// /var/www appartient à root ; seuls les dossiers des sites appartiennent au deployer.
+		"install -d -m 755 -o root -g root /var/www",
+		"install -d -m 755 /var/www/letsencrypt",
+	); err != nil {
+		return err
 	}
 
-	for _, cmd := range commands {
-		if _, err := r.RunSilent(ctx, cmd); err != nil {
-			return fmt.Errorf("erreur installation outils (%s): %w", cmd, err)
-		}
+	lr, err := templates.Static("logrotate/terangahost.conf")
+	if err != nil {
+		return err
 	}
-
-	// 4. Configuration stricte de Logrotate pour éviter la saturation du disque par les logs Laravel et Nginx
-	logrotateConfig := `/var/log/nginx/*.log /var/www/*/*/storage/logs/*.log {
-    daily
-    missingok
-    rotate 14
-    compress
-    delaycompress
-    notifempty
-    create 0640 www-data adm
-    sharedscripts
-    prerotate
-        if [ -d /etc/logrotate.d/httpd-prerotate ]; then \
-            run-parts /etc/logrotate.d/httpd-prerotate; \
-        fi \
-    endscript
-    postrotate
-        invoke-rc.d nginx rotate >/dev/null 2>&1 || true
-    endscript
-}
-`
-	if err := r.Upload(ctx, []byte(logrotateConfig), "/etc/logrotate.d/terangahost", 0644); err != nil {
-		return fmt.Errorf("impossible d'installer la configuration logrotate: %w", err)
+	if err := r.Upload(ctx, lr, "/etc/logrotate.d/terangahost", 0o644); err != nil {
+		return err
 	}
-
-	return nil
+	return r.Upload(ctx, []byte(renewHook), renewHookPath, 0o755)
 }

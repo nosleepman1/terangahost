@@ -3,32 +3,22 @@ package ui
 import (
 	"fmt"
 	"strings"
-
-	"github.com/fatih/color"
 )
 
-// PrintBanner affiche la bannière textuelle de TerangaHost
-func PrintBanner() {
-	gold := color.New(color.FgHiYellow, color.Bold).SprintFunc()
-	cyan := color.New(color.FgCyan).SprintFunc()
-	gray := color.New(color.FgHiBlack).SprintFunc()
-
+// PrintBanner affiche la bannière de TerangaHost (uniquement dans un terminal interactif).
+func PrintBanner(version string) {
+	if !IsTTY() {
+		return
+	}
 	banner := `
-  ████████╗███████╗██████╗  █████╗ ███╗   ██╗ ██████╗  █████╗ 
+  ████████╗███████╗██████╗  █████╗ ███╗   ██╗ ██████╗  █████╗
   ╚══██╔══╝██╔════╝██╔══██╗██╔══██╗████╗  ██║██╔════╝ ██╔══██╗
      ██║   █████╗  ██████╔╝███████║██╔██╗ ██║██║  ███╗███████║
      ██║   ██╔══╝  ██╔══██╗██╔══██║██║╚██╗██║██║   ██║██╔══██║
      ██║   ███████╗██║  ██║██║  ██║██║ ╚████║╚██████╔╝██║  ██║
      ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═╝
-     ██╗  ██╗ ██████╗ ███████╗████████╗                       
-     ██║  ██║██╔═══██╗██╔════╝╚══██╔══╝                       
-     ███████║██║   ██║███████╗   ██║                          
-     ██╔══██║██║   ██║╚════██║   ██║                          
-     ██║  ██║╚██████╔╝███████║   ██║                          
-     ╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝                          `
-
-	fmt.Println(gold(banner))
-	fmt.Println(cyan("  Automated Infrastructure Provisioning & Deployment for Laravel"))
-	fmt.Println(gray(strings.Repeat("─", 74)))
-	fmt.Println()
+                         H O S T`
+	fmt.Fprintln(Out, Gold(banner))
+	fmt.Fprintf(Out, "  %s %s\n", Cyan("Provisioning & zero-downtime deployment for Laravel"), Gray(version))
+	fmt.Fprintln(Out, Gray(strings.Repeat("─", 74)))
 }

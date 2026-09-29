@@ -1,12 +1,18 @@
+; Managed by TerangaHost - workers de queue de {{ .Domain }}
+; Le worker attend le premier deploiement, puis execute toujours la release active.
 [program:{{ .ID }}-worker]
 process_name=%(program_name)s_%(process_num)02d
-command=php{{ .PHPVersion }} {{ .Directory }}/current/artisan queue:work --sleep=3 --tries=3 --max-time=3600
+command=/bin/bash -c 'until [ -f {{ .Directory }}/current/artisan ]; do sleep 10; done; exec php{{ .PHPVersion }} {{ .Directory }}/current/artisan queue:work --sleep=3 --tries=3 --max-time=3600'
+directory={{ .Directory }}
 autostart=true
 autorestart=true
+startsecs=1
 stopasgroup=true
 killasgroup=true
 user=deployer
 numprocs={{ .QueueWorkers }}
 redirect_stderr=true
-stdout_logfile={{ .Directory }}/shared/storage/logs/worker.log
+stdout_logfile=/var/log/supervisor/{{ .ID }}-worker.log
+stdout_logfile_maxbytes=10MB
+stdout_logfile_backups=5
 stopwaitsecs=3600

@@ -1,137 +1,179 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
+	"strings"
 	"time"
 
-	"github.com/fatih/color"
+	"github.com/nosleepman1/terangahost/internal/deploy"
+	"github.com/nosleepman1/terangahost/internal/ui"
+	"github.com/nosleepman1/terangahost/internal/validate"
 	"github.com/spf13/cobra"
-	"github.com/teranga-host/terangahost/internal/platform/ssh"
-	"github.com/teranga-host/terangahost/internal/platform/storage"
 )
 
-var (
-	deployServerName string
-	deployDomain     string
-	deployRepo       string
-	deployBranch     string
-)
+var sd struct {
+	domain, server, repo, branch string
+	noMigrate                    bool
+	keep                         int
+	timeout                      time.Duration
+}
 
 var siteDeployCmd = &cobra.Command{
 	Use:   "deploy",
-	Short: "Deploie une version de votre API Laravel en Zero-Downtime",
-	Long: `Clone le repository Git dans un nouveau dossier de release, installe Composer,
-applique les migrations, met en cache les routes et configs, puis bascule le symlink 'current'.`,
-	Run: func(cmd *cobra.Command, args []string) {
-		runSiteDeploy()
-	},
+	Short: "Déploie la dernière version d'une application Laravel sans interruption de service",
+	Long: `Clone le dépôt dans une nouvelle release, installe les dépendances Composer, met en cache la
+configuration, exécute les migrations puis bascule atomiquement le lien 'current'.
+Si une étape échoue avant la bascule, la release est supprimée et la production reste inchangée.
+Le dépôt et la branche sont mémorisés : les déploiements suivants ne nécessitent que --domain.`,
+	Example: `  terangahost site deploy --domain=api.exemple.com --repo=git@github.com:org/api.git --branch=main
+  terangahost site deploy --domain=api.exemple.com`,
+	RunE: func(*cobra.Command, []string) error { return runSiteDeploy() },
 }
 
 func init() {
-	siteDeployCmd.Flags().StringVar(&deployServerName, "server", "", "Nom du serveur hote cible")
-	siteDeployCmd.Flags().StringVar(&deployDomain, "domain", "", "Nom de domaine du site (ex: api.monprojet.sn)")
-	siteDeployCmd.Flags().StringVar(&deployRepo, "repo", "", "URL du depot Git (HTTPS ou SSH)")
-	siteDeployCmd.Flags().StringVar(&deployBranch, "branch", "main", "Branche Git a deployer (defaut: main)")
-
-	_ = siteDeployCmd.MarkFlagRequired("server")
+	f := siteDeployCmd.Flags()
+	f.StringVar(&sd.domain, "domain", "", "Domaine du site")
+	f.StringVar(&sd.server, "server", "", "Nom du serveur (vérification facultative)")
+	f.StringVar(&sd.repo, "repo", "", "URL du dépôt Git (HTTPS ou SSH) ; mémorisée pour les prochains déploiements")
+	f.StringVar(&sd.branch, "branch", "", "Branche ou tag à déployer (défaut : branche mémorisée, sinon main)")
+	f.BoolVar(&sd.noMigrate, "no-migrate", false, "N'exécute pas les migrations")
+	f.IntVar(&sd.keep, "keep", 5, "Nombre de releases conservées pour le retour arrière")
+	f.DurationVar(&sd.timeout, "timeout", 30*time.Minute, "Durée maximale du déploiement")
 	_ = siteDeployCmd.MarkFlagRequired("domain")
-	_ = siteDeployCmd.MarkFlagRequired("repo")
+	siteCmd.AddCommand(siteDeployCmd)
 }
 
-func runSiteDeploy() {
-	cyan := color.New(color.FgCyan, color.Bold).SprintFunc()
-	green := color.New(color.FgGreen, color.Bold).SprintFunc()
-	red := color.New(color.FgRed, color.Bold).SprintFunc()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+func runSiteDeploy() error {
+	domainName, err := validate.Domain(sd.domain)
+	if err != nil {
+		return err
+	}
+	if err := validate.Range("--keep", sd.keep, 1, 50); err != nil {
+		return err
+	}
+	store, err := openStore()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := commandContext(sd.timeout)
 	defer cancel()
-
-	repo, err := storage.NewJSONRepository()
+	s, srv, err := siteWithServer(ctx, store, domainName, sd.server)
 	if err != nil {
-		fmt.Printf("%s %v\n", red("[ERROR] Repository:"), err)
-		return
+		return err
 	}
 
-	srv, err := repo.FindByName(ctx, deployServerName)
-	if err != nil {
-		fmt.Printf("%s Serveur [%s] introuvable.\n", red("[ERROR]"), deployServerName)
-		return
+	repo, branch := firstNonEmpty(sd.repo, s.Repository), firstNonEmpty(sd.branch, s.Branch, "main")
+	if repo == "" {
+		return fmt.Errorf("aucun dépôt mémorisé pour %s : précisez --repo", domainName)
+	}
+	if err := validate.Repository(repo); err != nil {
+		return err
+	}
+	if err := validate.Branch(branch); err != nil {
+		return err
 	}
 
-	fmt.Printf("[DEPLOY] Demarrage du deploiement Zero-Downtime pour [%s] sur [%s] (branche: %s)...\n\n",
-		deployDomain, srv.Name, deployBranch)
+	log := openLog("deploy_" + s.ID)
+	defer log.Close()
+	r, err := connectDeployer(srv, log)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
 
-	client, err := ssh.NewNativeSSHClient(ssh.ClientOptions{
-		Host:           srv.IP,
-		Port:           srv.SSHPort,
-		User:           srv.DeployUser,
-		PrivateKeyPath: srv.SSHKeyPath,
+	ui.Info("Déploiement de %s %s sur %s", ui.Cyan(domainName), ui.Gray("("+repo+"@"+branch+")"), srv.Name)
+	start := time.Now()
+	var sp *ui.Spinner
+	var current string
+	res, err := deploy.Run(ctx, r, s, deploy.Options{Repository: repo, Branch: branch, Migrate: !sd.noMigrate, KeepReleases: sd.keep}, deploy.Events{
+		OnStep: func(title string) {
+			if sp != nil {
+				sp.Succeed(current)
+			}
+			current = title
+			sp = ui.StartSpinner(title)
+		},
+		OnWarn: func(msg string) {
+			if sp != nil {
+				sp.Update(current + ui.Yellow(" ! "+msg))
+			}
+		},
+		OnOutput: func(line string) {
+			if verbose {
+				fmt.Println(ui.Gray("    " + line))
+			}
+		},
 	})
 	if err != nil {
-		fmt.Printf("%s Connexion SSH impossible: %v\n", red("[ERROR]"), err)
-		return
+		if sp != nil {
+			sp.Fail(current)
+		}
+		if res != nil && len(res.Output) > 0 && !verbose {
+			ui.Info("\n%s", ui.Gray(strings.Join(lastN(res.Output, 25), "\n")))
+		}
+		if res != nil && res.Activated {
+			ui.Warn("la nouvelle release %s est active mais une étape finale a échoué", res.Release)
+		} else {
+			ui.Warn("déploiement annulé : la version en production est inchangée")
+		}
+		if res != nil && gitAccessDenied(res.Output) {
+			ui.Info("\nAccès au dépôt refusé. Pour un dépôt privé, ajoutez la deploy key du serveur :")
+			ui.Hint("terangahost server deploy-key --name=" + srv.Name)
+		}
+		if log != nil {
+			ui.Info("Journal détaillé : %s", log.Path)
+		}
+		return fmt.Errorf("échec du déploiement de %s: %w", domainName, err)
 	}
-	defer client.Close()
-
-	runner := ssh.NewNativeSSHRunner(client)
-	defer runner.Close()
-
-	releaseID := time.Now().Format("20060102150405")
-	siteDir := fmt.Sprintf("/var/www/%s", deployDomain)
-	releaseDir := fmt.Sprintf("%s/releases/%s", siteDir, releaseID)
-
-	deploySteps := []struct {
-		desc string
-		cmd  string
-	}{
-		{
-			desc: "1. Clonage de la branche " + deployBranch,
-			cmd:  fmt.Sprintf("git clone --depth 1 --branch %s %s %s", deployBranch, deployRepo, releaseDir),
-		},
-		{
-			desc: "2. Liaison des fichiers et dossiers partages (.env, storage/)",
-			cmd: fmt.Sprintf("ln -nfs %s/shared/.env %s/.env && rm -rf %s/storage && ln -nfs %s/shared/storage %s/storage",
-				siteDir, releaseDir, releaseDir, siteDir, releaseDir),
-		},
-		{
-			desc: "3. Installation des dependances Composer (Optimized Autoloader)",
-			cmd:  fmt.Sprintf("cd %s && composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader", releaseDir),
-		},
-		{
-			desc: "4. Mise en cache des configurations, routes et vues Laravel",
-			cmd:  fmt.Sprintf("cd %s && php artisan config:cache && php artisan route:cache && php artisan view:cache", releaseDir),
-		},
-		{
-			desc: "5. Execution des migrations de base de donnees",
-			cmd:  fmt.Sprintf("cd %s && [ -f .env ] && php artisan migrate --force || true", releaseDir),
-		},
-		{
-			desc: "6. Bascule atomique du lien symbolique (Zero-Downtime Switch)",
-			cmd:  fmt.Sprintf("ln -sfn %s %s/current", releaseDir, siteDir),
-		},
-		{
-			desc: "7. Rechargement de PHP-FPM et redemarrage des workers de queue",
-			cmd: fmt.Sprintf("sudo service php%s-fpm reload && sudo supervisorctl restart all || true",
-				srv.PHPVersion),
-		},
-		{
-			desc: "8. Nettoyage des anciennes releases (conservation des 5 dernieres)",
-			cmd:  fmt.Sprintf("cd %s/releases && ls -t | tail -n +6 | xargs -r rm -rf", siteDir),
-		},
+	if sp != nil {
+		sp.Succeed(current)
 	}
 
-	for _, step := range deploySteps {
-		fmt.Printf("  %s %s...\n", cyan("[STEP]"), step.desc)
-		if err := runner.Execute(ctx, step.cmd, nil, nil); err != nil {
-			fmt.Printf("\n%s Echec a l'etape: %s\n%v\n", red("[ERROR DEPLOY]"), step.desc, err)
-			return
+	s.Repository, s.Branch, s.CurrentRelease, s.LastCommit, s.LastDeployAt = repo, branch, res.Release, res.Commit, time.Now()
+	if err := store.SaveSite(ctx, s); err != nil {
+		return err
+	}
+
+	scheme := "http"
+	if s.HasSSL {
+		scheme = "https"
+	}
+	fmt.Println()
+	ui.Rule()
+	ui.Success("Déploiement terminé en %s", time.Since(start).Round(time.Second))
+	ui.KV("URL", scheme+"://"+domainName)
+	ui.KV("Release", res.Release)
+	ui.KV("Commit", res.Commit)
+	for _, w := range res.Warnings {
+		ui.Warn("%s", w)
+	}
+	ui.Rule()
+	ui.Info("Retour arrière si nécessaire : terangahost site rollback --domain=%s", domainName)
+	return nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
 		}
 	}
+	return ""
+}
 
-	fmt.Println(color.HiBlackString("──────────────────────────────────────────────────────────────────────────"))
-	fmt.Printf("%s Deploiement Zero-Downtime termine avec succes.\n", green("[SUCCESS]"))
-	fmt.Printf("  - URL : https://%s\n", deployDomain)
-	fmt.Printf("  - Identifiant de release : %s\n", releaseID)
-	fmt.Println(color.HiBlackString("──────────────────────────────────────────────────────────────────────────\n"))
+func lastN(lines []string, n int) []string {
+	if len(lines) > n {
+		return lines[len(lines)-n:]
+	}
+	return lines
+}
+
+func gitAccessDenied(output []string) bool {
+	joined := strings.ToLower(strings.Join(output, "\n"))
+	for _, s := range []string{"permission denied (publickey)", "could not read from remote repository", "repository not found", "authentication failed", "could not read username"} {
+		if strings.Contains(joined, s) {
+			return true
+		}
+	}
+	return false
 }

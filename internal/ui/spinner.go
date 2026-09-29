@@ -2,93 +2,99 @@ package ui
 
 import (
 	"fmt"
+	"sync"
 	"time"
-
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
-type StepState int
+var frames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-const (
-	StepPending StepState = iota
-	StepRunning
-	StepCompleted
-	StepSkipped
-	StepFailed
-)
+// SpinnerEnabled permet de désactiver l'animation (mode verbeux, sortie non interactive).
+var SpinnerEnabled = true
 
-type StepItem struct {
-	ID       string
-	Title    string
-	State    StepState
-	Duration time.Duration
-	Error    error
+// Spinner anime une ligne de progression pendant une opération longue.
+// Hors terminal, il affiche simplement le message une fois.
+type Spinner struct {
+	mu      sync.Mutex
+	msg     string
+	start   time.Time
+	stop    chan struct{}
+	done    chan struct{}
+	animate bool
 }
 
-type Model struct {
-	spinner  spinner.Model
-	steps    []StepItem
-	current  int
-	finished bool
-	quitting bool
-}
-
-func InitialModel(steps []StepItem) Model {
-	s := spinner.New()
-	s.Spinner = spinner.Dot
-	s.Style = lipgloss.NewStyle().Foreground(ColorPrimary)
-
-	return Model{
-		spinner: s,
-		steps:   steps,
-		current: 0,
+// StartSpinner démarre un indicateur de progression.
+func StartSpinner(msg string) *Spinner {
+	s := &Spinner{msg: msg, start: time.Now(), stop: make(chan struct{}), done: make(chan struct{})}
+	s.animate = SpinnerEnabled && IsTTY()
+	if !s.animate {
+		fmt.Fprintf(Out, "  … %s\n", msg)
+		close(s.done)
+		return s
 	}
+	go s.loop()
+	return s
 }
 
-func (m Model) Init() tea.Cmd {
-	return m.spinner.Tick
-}
-
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		if msg.String() == "q" || msg.String() == "ctrl+c" {
-			m.quitting = true
-			return m, tea.Quit
+func (s *Spinner) loop() {
+	defer close(s.done)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for i := 0; ; i++ {
+		s.mu.Lock()
+		fmt.Fprintf(Out, "\r\033[K  %s %s %s", Cyan(frames[i%len(frames)]), s.msg, Gray(Elapsed(s.start)))
+		s.mu.Unlock()
+		select {
+		case <-s.stop:
+			fmt.Fprint(Out, "\r\033[K")
+			return
+		case <-ticker.C:
 		}
-	case spinner.TickMsg:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
 	}
-	return m, nil
 }
 
-func (m Model) View() string {
-	if m.quitting {
-		return "Arrêt demandé.\n"
-	}
+// Update change le message affiché.
+func (s *Spinner) Update(msg string) {
+	s.mu.Lock()
+	s.msg = msg
+	s.mu.Unlock()
+}
 
-	var out string
-	for _, step := range m.steps {
-		var icon string
-		switch step.State {
-		case StepCompleted:
-			icon = lipgloss.NewStyle().Foreground(ColorSecondary).Render("✔")
-		case StepSkipped:
-			icon = lipgloss.NewStyle().Foreground(ColorWarning).Render("⚡")
-		case StepFailed:
-			icon = lipgloss.NewStyle().Foreground(ColorDanger).Render("✖")
-		case StepRunning:
-			icon = m.spinner.View()
+// Stop arrête l'animation et retourne la durée écoulée.
+func (s *Spinner) Stop() time.Duration {
+	if s.animate {
+		select {
+		case <-s.stop:
 		default:
-			icon = lipgloss.NewStyle().Foreground(ColorMuted).Render("○")
+			close(s.stop)
 		}
-
-		out += fmt.Sprintf("  %s %s\n", icon, step.Title)
 	}
+	<-s.done
+	return time.Since(s.start)
+}
 
-	return out
+// Succeed arrête le spinner et affiche une ligne de réussite.
+func (s *Spinner) Succeed(msg string) {
+	d := s.Stop()
+	fmt.Fprintf(Out, "  %s %s %s\n", Green("✔"), msg, Gray(Elapsed(time.Now().Add(-d))))
+}
+
+// Skip arrête le spinner et affiche une ligne « déjà configuré ».
+func (s *Spinner) Skip(msg string) {
+	s.Stop()
+	fmt.Fprintf(Out, "  %s %s %s\n", Yellow("↷"), msg, Gray("(déjà configuré)"))
+}
+
+// Fail arrête le spinner et affiche une ligne d'échec.
+func (s *Spinner) Fail(msg string) {
+	s.Stop()
+	fmt.Fprintf(Out, "  %s %s\n", Red("✖"), msg)
+}
+
+// Elapsed formate une durée écoulée depuis start.
+func Elapsed(start time.Time) string {
+	d := time.Since(start)
+	if d < time.Second {
+		return fmt.Sprintf("(%dms)", d.Milliseconds())
+	}
+	return fmt.Sprintf("(%s)", d.Round(100*time.Millisecond))
 }

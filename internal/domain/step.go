@@ -2,19 +2,18 @@ package domain
 
 import "context"
 
-// Step définit le contrat d'une étape de provisionnement ou de maintenance du serveur.
-// Chaque étape DOIT être 100% idempotente.
+// Step définit le contrat d'une étape de provisionnement. Chaque étape DOIT être idempotente :
+// elle peut être rejouée sans effet de bord sur un serveur déjà configuré.
 type Step interface {
-	// ID renvoie l'identifiant technique unique de l'étape (ex: "php_installation")
+	// ID renvoie l'identifiant technique unique de l'étape.
 	ID() string
 
-	// Title renvoie le libellé clair affiché dans le terminal (ex: "Installation de PHP 8.3 & Extensions FPM")
+	// Title renvoie le libellé affiché dans le terminal.
 	Title() string
 
-	// PreCheck vérifie si l'étape a déjà été exécutée avec succès pour éviter les opérations redondantes
-	// Retourne true si l'étape est déjà satisfaite (elle sera alors sautée avec le statut [SKIPPED])
+	// PreCheck retourne true si l'étape est déjà satisfaite (elle est alors sautée).
 	PreCheck(ctx context.Context, r Runner, s *Server) (bool, error)
 
-	// Execute applique les configurations nécessaires sur le serveur
+	// Execute applique la configuration sur le serveur.
 	Execute(ctx context.Context, r Runner, s *Server) error
 }

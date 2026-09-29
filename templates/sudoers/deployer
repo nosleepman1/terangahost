@@ -1,0 +1,3 @@
+# Managed by TerangaHost
+# Le deployer peut uniquement recharger PHP-FPM (commandes exactes, sans argument libre).
+deployer ALL=(root) NOPASSWD: /usr/bin/systemctl reload php8.2-fpm, /usr/bin/systemctl reload php8.3-fpm, /usr/bin/systemctl reload php8.4-fpm

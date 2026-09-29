@@ -1,174 +1,198 @@
 package cmd
 
 import (
-	"context"
+	"errors"
 	"fmt"
-	"os"
-	"os/signal"
-	"syscall"
+	"strings"
 	"time"
 
-	"github.com/fatih/color"
+	"github.com/nosleepman1/terangahost/internal/domain"
+	"github.com/nosleepman1/terangahost/internal/engine"
+	"github.com/nosleepman1/terangahost/internal/engine/steps"
+	"github.com/nosleepman1/terangahost/internal/platform/ssh"
+	"github.com/nosleepman1/terangahost/internal/ui"
+	"github.com/nosleepman1/terangahost/internal/validate"
 	"github.com/spf13/cobra"
-	"github.com/teranga-host/terangahost/internal/domain"
-	"github.com/teranga-host/terangahost/internal/engine"
-	"github.com/teranga-host/terangahost/internal/engine/steps"
-	"github.com/teranga-host/terangahost/internal/platform/logger"
-	"github.com/teranga-host/terangahost/internal/platform/ssh"
-	"github.com/teranga-host/terangahost/internal/platform/storage"
 )
 
-var (
-	provName       string
-	provIP         string
-	provPort       int
-	provUser       string
-	provKey        string
-	provPassword   string
-	provPHP        string
-	provDatabase   string
-	provWithRedis  bool
-)
+var prov struct {
+	name, ip, user, key, password, php, db string
+	port                                   int
+	askPassword, redis, hardenSSH          bool
+}
 
 var serverProvisionCmd = &cobra.Command{
 	Use:   "provision",
-	Short: "Provisionne un serveur VPS Ubuntu vierge en environnement Laravel de production",
-	Long: `Configure un serveur Ubuntu 22.04/24.04: pare-feu UFW, Fail2ban, utilisateur deployer,
-swap 2GB, PHP 8.x (14 extensions), Nginx, Supervisor, Composer, Certbot et Base de donnees.`,
-	Run: func(cmd *cobra.Command, args []string) {
-		runProvision()
-	},
+	Short: "Provisionne un VPS Ubuntu 22.04/24.04 pour Laravel (idempotent : peut être relancé)",
+	Long: `Configure un VPS Ubuntu 22.04/24.04 : swap, utilisateur deployer, UFW, Fail2ban, mises à jour de
+sécurité automatiques, PHP-FPM, Nginx, Composer, Supervisor, Certbot, MariaDB/PostgreSQL, Redis et
+durcissement SSH. La commande est idempotente : relancez-la pour réparer ou mettre à jour un serveur.`,
+	Example: `  terangahost server provision --name=prod --ip=203.0.113.10 --ssh-key=~/.ssh/id_ed25519
+  terangahost server provision --name=prod --ip=203.0.113.10 --user=ubuntu --db=postgres --php=8.4`,
+	RunE: func(cmd *cobra.Command, _ []string) error { return runProvision() },
 }
 
 func init() {
-	serverProvisionCmd.Flags().StringVar(&provName, "name", "", "Nom unique du serveur (ex: dakar-prod)")
-	serverProvisionCmd.Flags().StringVar(&provIP, "ip", "", "Adresse IP publique du VPS (ex: 192.168.1.50)")
-	serverProvisionCmd.Flags().IntVar(&provPort, "port", 22, "Port SSH (defaut: 22)")
-	serverProvisionCmd.Flags().StringVar(&provUser, "user", "root", "Utilisateur initial pour la connexion SSH")
-	serverProvisionCmd.Flags().StringVar(&provKey, "ssh-key", "", "Chemin vers votre cle privee SSH (ex: ~/.ssh/id_ed25519)")
-	serverProvisionCmd.Flags().StringVar(&provPassword, "password", "", "Mot de passe SSH (optionnel si cle utilisee)")
-	serverProvisionCmd.Flags().StringVar(&provPHP, "php", "8.3", "Version de PHP a installer (8.2, 8.3, 8.4)")
-	serverProvisionCmd.Flags().StringVar(&provDatabase, "db", "mariadb", "Base de donnees ('mariadb', 'postgres', 'none')")
-	serverProvisionCmd.Flags().BoolVar(&provWithRedis, "redis", true, "Installer et activer le serveur Redis")
-
-	_ = serverProvisionCmd.MarkFlagRequired("ip")
+	f := serverProvisionCmd.Flags()
+	f.StringVar(&prov.name, "name", "", "Nom unique du serveur (ex: dakar-prod)")
+	f.StringVar(&prov.ip, "ip", "", "Adresse IP publique du VPS")
+	f.IntVar(&prov.port, "port", 22, "Port SSH")
+	f.StringVar(&prov.user, "user", "root", "Utilisateur SSH initial (root ou sudoer sans mot de passe)")
+	f.StringVar(&prov.key, "ssh-key", "", "Clé privée SSH (par défaut : ssh-agent puis ~/.ssh/id_ed25519, id_ecdsa, id_rsa)")
+	f.BoolVar(&prov.askPassword, "ask-password", false, "Demande le mot de passe SSH de façon masquée (ou "+ssh.EnvPassword+")")
+	f.StringVar(&prov.password, "password", "", "Obsolète : visible dans l'historique du shell, utilisez --ask-password")
+	f.StringVar(&prov.php, "php", "8.3", "Version PHP ("+strings.Join(validate.SupportedPHPVersions, ", ")+")")
+	f.StringVar(&prov.db, "db", "mariadb", "Base de données : mariadb, postgres ou none")
+	f.BoolVar(&prov.redis, "redis", true, "Installe Redis (cache, sessions, queues)")
+	f.BoolVar(&prov.hardenSSH, "harden-ssh", true, "Désactive l'authentification SSH par mot de passe (uniquement si vous êtes connecté par clé)")
+	_ = f.MarkDeprecated("password", "utilisez --ask-password ou la variable "+ssh.EnvPassword)
 	_ = serverProvisionCmd.MarkFlagRequired("name")
+	_ = serverProvisionCmd.MarkFlagRequired("ip")
+	serverCmd.AddCommand(serverProvisionCmd)
 }
 
-func runProvision() {
-	cyan := color.New(color.FgCyan, color.Bold).SprintFunc()
-	green := color.New(color.FgGreen, color.Bold).SprintFunc()
-	yellow := color.New(color.FgYellow, color.Bold).SprintFunc()
-	red := color.New(color.FgRed, color.Bold).SprintFunc()
+func runProvision() error {
+	if err := validate.ServerName(prov.name); err != nil {
+		return err
+	}
+	if err := validate.Host(prov.ip); err != nil {
+		return err
+	}
+	if err := validate.Port(prov.port); err != nil {
+		return err
+	}
+	if err := validate.PHPVersion(prov.php); err != nil {
+		return err
+	}
+	db, err := validate.Database(prov.db)
+	if err != nil {
+		return err
+	}
 
-	fmt.Printf("[INFO] Initialisation du provisionnement pour le serveur [%s] (%s)...\n\n", provName, provIP)
-
-	// 1. Initialisation du Context et gestion de l'interruption (Ctrl+C)
-	ctx, cancel := context.WithCancel(context.Background())
+	store, err := openStore()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := commandContext(90 * time.Minute)
 	defer cancel()
 
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigChan
-		fmt.Printf("\n%s Interruption demandee. Arret securise du pipeline...\n", yellow("[SIGNAL: INTERRUPT]"))
-		cancel()
-	}()
-
-	// 2. Initialisation du logger sur disque
-	logFile, logPath, err := logger.NewFileLogger("provision_" + provName)
-	if err == nil {
-		defer logFile.Close()
-		fmt.Printf("[LOG] Fichier journal detaille: %s\n\n", color.HiBlackString(logPath))
+	srv, err := store.FindServer(ctx, prov.name)
+	switch {
+	case errors.Is(err, domain.ErrServerNotFound):
+		srv = &domain.Server{ID: fmt.Sprintf("srv_%d", time.Now().UnixNano()), Name: prov.name, CreatedAt: time.Now()}
+	case err != nil:
+		return err
+	case srv.IP != prov.ip:
+		return fmt.Errorf("%w : %q pointe vers %s (supprimez-le d'abord avec 'terangahost server remove --name=%s')",
+			domain.ErrServerAlreadyExists, prov.name, srv.IP, prov.name)
 	}
 
-	// 3. Connexion SSH
-	fmt.Printf("[SSH] Connexion vers %s@%s:%d...\n", provUser, provIP, provPort)
-	client, err := ssh.NewNativeSSHClient(ssh.ClientOptions{
-		Host:           provIP,
-		Port:           provPort,
-		User:           provUser,
-		PrivateKeyPath: provKey,
-		Password:       provPassword,
-		Timeout:        20 * time.Second,
-	})
-	if err != nil {
-		fmt.Printf("\n%s Impossible d'etablir la connexion SSH: %v\n", red("[ERROR]"), err)
-		return
+	password := prov.password
+	if prov.askPassword {
+		if password, err = ssh.PromptSecret(fmt.Sprintf("Mot de passe SSH de %s@%s : ", prov.user, prov.ip)); err != nil {
+			return err
+		}
 	}
-	defer client.Close()
 
-	runner := ssh.NewNativeSSHRunner(client)
+	ui.PrintBanner(Version)
+	log := openLog("provision_" + prov.name)
+	defer log.Close()
+
+	var client *ssh.Client
+	if err := task(fmt.Sprintf("Connexion SSH à %s@%s:%d", prov.user, prov.ip, prov.port), func() error {
+		client, err = ssh.Dial(ssh.ClientOptions{
+			Host: prov.ip, Port: prov.port, User: prov.user,
+			PrivateKeyPath: prov.key, Password: password, Timeout: 20 * time.Second,
+		})
+		return err
+	}); err != nil {
+		return err
+	}
+	runner := ssh.NewRunner(client, ssh.RunnerOptions{Sudo: prov.user != "root", Log: log.Writer()})
 	defer runner.Close()
 
-	// 4. Detection du materiel (Hardware-Aware)
-	fmt.Printf("[HARDWARE] Analyse des specifications du serveur cible...\n")
 	spec, err := engine.DetectHardware(ctx, runner)
 	if err != nil {
-		fmt.Printf("  %s %v (valeurs par defaut appliquees)\n", yellow("[WARN]"), err)
-		spec.TotalRAMMB = 1024
-		spec.CPUCores = 1
+		ui.Warn("%v : valeurs prudentes utilisées (1 Go de RAM)", err)
+		spec.TotalRAMMB, spec.CPUCores = 1024, 1
 	} else {
-		fmt.Printf("  [HARDWARE] Detecte: %s | %d MB RAM | %d vCPU | %d GB Disque libre\n\n",
-			cyan(spec.OSVersion), spec.TotalRAMMB, spec.CPUCores, spec.DiskFreeGB)
+		ui.Info("  %s %s · %d Mo RAM · %d vCPU · %d Go libres", ui.Gray("Matériel :"), spec.OSVersion, spec.TotalRAMMB, spec.CPUCores, spec.DiskFreeGB)
 	}
 
-	// 5. Creation de l'entite Server
-	srv := &domain.Server{
-		ID:         fmt.Sprintf("srv_%d", time.Now().Unix()),
-		Name:       provName,
-		IP:         provIP,
-		SSHPort:    provPort,
-		RootUser:   provUser,
-		DeployUser: "deployer",
-		SSHKeyPath: provKey,
-		PHPVersion: provPHP,
-		Database:   provDatabase,
-		WithRedis:  provWithRedis,
-		Hardware:   spec,
-		Status:     "provisioning",
-		CreatedAt:  time.Now(),
-		UpdatedAt:  time.Now(),
+	srv.IP, srv.SSHPort, srv.AdminUser, srv.DeployUser = prov.ip, prov.port, prov.user, domain.DeployUser
+	if prov.key != "" {
+		srv.SSHKeyPath = prov.key
+	}
+	srv.PHPVersion, srv.Database, srv.WithRedis, srv.Hardware = prov.php, db, prov.redis, spec
+	srv.Status = domain.StatusProvisioning
+	if err := store.SaveServer(ctx, srv); err != nil {
+		return err
 	}
 
-	// 6. Construction et execution du Pipeline
-	listener := &engine.DefaultConsoleListener{Writer: os.Stdout}
-	pipeline := engine.NewPipeline(listener)
-
-	pipeline.AddStep(&steps.StepHandshake{})
-	pipeline.AddStep(&steps.StepSwap{})
-	pipeline.AddStep(&steps.StepSecurity{})
-	pipeline.AddStep(&steps.StepSudoers{})
-	pipeline.AddStep(&steps.StepPHP{})
-	pipeline.AddStep(&steps.StepWebServer{})
-	pipeline.AddStep(&steps.StepTools{})
-	pipeline.AddStep(&steps.StepDatabase{})
-
-	pipelineStart := time.Now()
-	if err := pipeline.Execute(ctx, runner, srv, logFile); err != nil {
-		fmt.Printf("\n%s Le provisionnement a echoue: %v\n", red("[FATAL ERROR]"), err)
-		fmt.Printf("Consultez le fichier journal: %s\n", logPath)
-		return
+	authorizedKey := client.AuthorizedKey()
+	harden := prov.hardenSSH && authorizedKey != ""
+	if prov.hardenSSH && !harden {
+		ui.Warn("connexion par mot de passe : le durcissement SSH est ignoré pour ne pas vous bloquer l'accès")
 	}
 
-	srv.Status = "ready"
-
-	// 7. Sauvegarde dans le repo local
-	repo, err := storage.NewJSONRepository()
-	if err == nil {
-		_ = repo.Save(ctx, srv)
+	ui.Section("Provisionnement")
+	pipeline := engine.NewPipeline(&engine.ConsoleListener{}, loggerOf(log))
+	pipeline.AddStep(
+		&steps.StepHandshake{},
+		&steps.StepSwap{},
+		&steps.StepSecurity{AuthorizedKey: authorizedKey},
+		&steps.StepSudoers{},
+		&steps.StepPHP{Version: prov.php},
+		&steps.StepWebServer{},
+		&steps.StepTools{},
+		&steps.StepDatabase{},
+		&steps.StepRedis{},
+		&steps.StepSSHHardening{Enabled: harden},
+	)
+	start := time.Now()
+	if err := pipeline.Execute(ctx, runner, srv); err != nil {
+		srv.Status = domain.StatusError
+		_ = store.SaveServer(ctx, srv)
+		if log != nil {
+			ui.Info("\nJournal détaillé : %s", log.Path)
+		}
+		return fmt.Errorf("provisionnement interrompu (relancez la commande pour reprendre) : %w", err)
+	}
+	srv.Status = domain.StatusReady
+	if err := store.SaveServer(ctx, srv); err != nil {
+		return err
 	}
 
-	totalDuration := time.Since(pipelineStart).Round(time.Second)
+	deployerOK := false
+	if authorizedKey != "" {
+		if dr, err := connectDeployer(srv, nil); err == nil {
+			_, err = dr.RunSilent(ctx, "true")
+			deployerOK = err == nil
+			dr.Close()
+		}
+	}
 
-	fmt.Println(color.HiBlackString("──────────────────────────────────────────────────────────────────────────"))
-	fmt.Printf("%s Serveur provisionne avec succes pour Laravel.\n", green("[SUCCESS]"))
-	fmt.Printf("  - Duree d'execution: %s\n", cyan(totalDuration.String()))
-	fmt.Printf("  - Utilisateur applicatif: %s\n", green("deployer"))
-	fmt.Printf("  - Serveur HTTP: %s\n", green("Nginx"))
-	fmt.Printf("  - Moteur PHP: %s (14 extensions + OPcache JIT)\n", green("PHP "+provPHP))
-	fmt.Printf("  - Base de donnees: %s\n", green(provDatabase))
-	fmt.Println(color.HiBlackString("──────────────────────────────────────────────────────────────────────────"))
-	fmt.Println("\nConfiguration d'une API sur cette instance :")
-	fmt.Printf("  %s\n\n", cyan("terangahost site create --server="+provName+" --domain=api.domaine.com"))
+	fmt.Println()
+	ui.Rule()
+	ui.Success("Serveur %s provisionné en %s", ui.Cyan(srv.Name), time.Since(start).Round(time.Second))
+	ui.KV("PHP", srv.PHPVersion)
+	ui.KV("Base de données", srv.Database)
+	ui.KV("Redis", fmt.Sprint(srv.WithRedis))
+	ui.KV("SSH durci", fmt.Sprint(harden))
+	if deployerOK {
+		ui.KV("Accès deployer", ui.Green("OK"))
+	} else {
+		ui.KV("Accès deployer", ui.Yellow("non vérifié"))
+		ui.Warn("ajoutez votre clé publique à /home/deployer/.ssh/authorized_keys pour pouvoir déployer")
+	}
+	if log != nil {
+		ui.KV("Journal", log.Path)
+	}
+	ui.Rule()
+	if srv.DeployKey != "" {
+		ui.Info("\nDeploy key (à ajouter en lecture seule sur GitHub/GitLab pour les dépôts privés) :\n  %s", srv.DeployKey)
+	}
+	ui.Info("\nÉtape suivante :")
+	ui.Hint(fmt.Sprintf("terangahost site create --server=%s --domain=api.exemple.com --repo=git@github.com:org/api.git", srv.Name))
+	return nil
 }

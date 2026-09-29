@@ -4,40 +4,43 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/teranga-host/terangahost/internal/domain"
+	"github.com/nosleepman1/terangahost/internal/domain"
+	"github.com/nosleepman1/terangahost/templates"
 )
 
-// StepSudoers configure des droits sudo restreints et sécurisés pour l'utilisateur 'deployer'
-// Lui permettant de recharger Nginx, PHP-FPM, Supervisor sans mot de passe tout en bloquant l'accès root global.
+const sudoersPath = "/etc/sudoers.d/terangahost-deployer"
+
+// StepSudoers installe la règle sudo minimale du deployer : uniquement le rechargement de PHP-FPM.
+// Elle remplace la règle des versions précédentes (service/supervisorctl/certbot avec arguments
+// libres) qui permettait une élévation de privilèges vers root.
 type StepSudoers struct{}
 
-func (s *StepSudoers) ID() string {
-	return "03_sudoers"
-}
-
+func (s *StepSudoers) ID() string { return "03_sudoers" }
 func (s *StepSudoers) Title() string {
-	return "Configuration des privilèges sudo restreints (Principe du moindre privilège)"
+	return "Privilèges sudo minimaux du deployer (moindre privilège)"
 }
 
-func (s *StepSudoers) PreCheck(ctx context.Context, r domain.Runner, srv *domain.Server) (bool, error) {
-	return r.FileExists(ctx, "/etc/sudoers.d/terangahost-deployer")
+func (s *StepSudoers) PreCheck(ctx context.Context, r domain.Runner, _ *domain.Server) (bool, error) {
+	want, err := templates.Static("sudoers/deployer")
+	if err != nil {
+		return false, err
+	}
+	return hasContent(ctx, r, sudoersPath, want), nil
 }
 
-func (s *StepSudoers) Execute(ctx context.Context, r domain.Runner, srv *domain.Server) error {
-	sudoersContent := `# Droits restreints TerangaHost pour l'utilisateur deployer
-deployer ALL=(ALL) NOPASSWD: /usr/sbin/service nginx *, /usr/sbin/service php*-fpm *, /usr/bin/supervisorctl *, /usr/bin/certbot *
-`
-	err := r.Upload(ctx, []byte(sudoersContent), "/etc/sudoers.d/terangahost-deployer", 0440)
+func (s *StepSudoers) Execute(ctx context.Context, r domain.Runner, _ *domain.Server) error {
+	content, err := templates.Static("sudoers/deployer")
 	if err != nil {
-		return fmt.Errorf("impossible de créer /etc/sudoers.d/terangahost-deployer: %w", err)
+		return err
 	}
-
-	// Valider la syntaxe du fichier sudoers avec visudo
-	_, err = r.RunSilent(ctx, "visudo -c -f /etc/sudoers.d/terangahost-deployer")
-	if err != nil {
-		_, _ = r.RunSilent(ctx, "rm -f /etc/sudoers.d/terangahost-deployer")
-		return fmt.Errorf("syntaxe sudoers invalide: %w", err)
+	// Les fichiers contenant un point sont ignorés par sudo : le brouillon est donc inactif.
+	tmp := sudoersPath + ".new"
+	if err := r.Upload(ctx, content, tmp, 0o440); err != nil {
+		return err
 	}
-
-	return nil
+	if _, err := r.RunSilent(ctx, "visudo -cf "+tmp); err != nil {
+		_, _ = r.RunSilent(ctx, "rm -f "+tmp)
+		return fmt.Errorf("règle sudoers invalide: %w", err)
+	}
+	return runAll(ctx, r, "installation de la règle sudoers", "mv -f "+tmp+" "+sudoersPath)
 }
