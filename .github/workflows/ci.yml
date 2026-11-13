@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, "feat/*", "fix/*"]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Lint, tests et compilation
+    # Runner hébergé par GitHub : un runner auto-hébergé exécuterait le code des pull requests
+    # provenant de forks sur votre propre machine.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Vérification des dépendances
+        run: go mod verify
+
+      - name: Formatage
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Tests (race detector)
+        run: go test -race -count=1 ./...
+
+      - name: Compilation multiplateforme
+        run: make build-all

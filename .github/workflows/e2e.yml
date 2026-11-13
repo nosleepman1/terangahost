@@ -1,0 +1,79 @@
+name: E2E Ubuntu
+
+# Provisionne réellement le runner Ubuntu via SSH (comme un VPS vierge), crée un site
+# puis déploie le squelette Laravel officiel et vérifie qu'il répond.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  provision-and-deploy:
+    name: Provision + deploy (Ubuntu 24.04)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      DOMAIN: app.terangahost.test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Compilation
+        run: make build && sudo install -m 755 bin/terangahost /usr/local/bin/terangahost
+
+      - name: Préparation du runner (SSH local, sans MySQL préinstallé)
+        run: |
+          sudo systemctl stop mysql || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get purge -y 'mysql-server*' 'mysql-client*' mysql-common || true
+          sudo rm -rf /var/lib/mysql /etc/mysql
+          sudo apt-get update -q
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q openssh-server
+          sudo systemctl start ssh
+          ssh-keygen -t ed25519 -N '' -q -f ~/.ssh/id_ed25519
+          cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
+          chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys
+
+      - name: server provision
+        run: terangahost server provision --name=ci --ip=127.0.0.1 --user="$USER" --ssh-key=~/.ssh/id_ed25519 --php=8.3 --db=mariadb
+
+      - name: server provision (idempotence)
+        run: terangahost server provision --name=ci --ip=127.0.0.1 --user="$USER" --ssh-key=~/.ssh/id_ed25519 --php=8.3 --db=mariadb
+
+      - name: site create
+        run: terangahost site create --server=ci --domain="$DOMAIN" --ssl=false --workers=1 --repo=https://github.com/laravel/laravel.git --branch=12.x
+
+      - name: site deploy
+        run: terangahost site deploy --domain="$DOMAIN" --verbose
+
+      - name: Vérification HTTP
+        run: |
+          curl -fsS -H "Host: $DOMAIN" http://127.0.0.1/up >/dev/null
+          echo "OK : /up répond 200"
+          if curl -fsS -H "Host: inconnu.test" http://127.0.0.1/ >/dev/null 2>&1; then
+            echo "Un domaine inconnu ne doit pas être servi" && exit 1
+          fi
+
+      - name: Second déploiement puis rollback
+        run: |
+          terangahost site deploy --domain="$DOMAIN"
+          terangahost site rollback --domain="$DOMAIN" --list
+          terangahost site rollback --domain="$DOMAIN"
+          curl -fsS -H "Host: $DOMAIN" http://127.0.0.1/up >/dev/null
+
+      - name: server doctor
+        run: terangahost server doctor --name=ci
+
+      - name: Journaux en cas d'échec
+        if: failure()
+        run: |
+          tail -n 300 ~/.terangahost/logs/*.log || true
+          sudo tail -n 50 /var/log/nginx/error.log /var/log/nginx/*-error.log || true
+          sudo tail -n 50 /var/www/*/shared/storage/logs/*.log || true

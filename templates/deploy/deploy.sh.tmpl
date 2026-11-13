@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# Genere par TerangaHost - deploiement zero-downtime de {{ .Domain }}
+set -Eeuo pipefail
+umask 022
+
+SITE_DIR={{ q .Directory }}
+RELEASE={{ q .ReleaseID }}
+RELEASE_DIR="$SITE_DIR/releases/$RELEASE"
+PHP={{ q .PHPBinary }}
+export COMPOSER_NO_INTERACTION=1
+export GIT_TERMINAL_PROMPT=0
+export GIT_SSH_COMMAND="ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
+
+step() { echo "::th-step::$1"; }
+warn() { echo "::th-warn::$1"; }
+
+# Un seul deploiement a la fois par site.
+exec 9>"$SITE_DIR/shared/.deploy.lock"
+if ! flock -n 9; then
+  echo "Un autre deploiement est deja en cours pour ce site." >&2
+  exit 75
+fi
+
+ACTIVATED=0
+on_exit() {
+  local status=$?
+  if [ "$status" -ne 0 ] && [ "$ACTIVATED" -eq 0 ]; then
+    rm -rf -- "$RELEASE_DIR"
+    echo "Release $RELEASE annulee : la version en production est inchangee." >&2
+  fi
+}
+trap on_exit EXIT
+
+if [ ! -f "$SITE_DIR/shared/.env" ]; then
+  echo "Fichier $SITE_DIR/shared/.env introuvable. Creez-le avec 'terangahost site env push'." >&2
+  exit 1
+fi
+
+step "Clonage du depot (branche {{ .Branch }})"
+git clone --quiet --depth 1 --branch {{ q .Branch }} -- {{ q .Repository }} "$RELEASE_DIR"
+echo "::th-commit::$(git -C "$RELEASE_DIR" rev-parse --short HEAD)"
+rm -rf -- "$RELEASE_DIR/.git"
+
+step "Liaison du .env et du dossier storage partages"
+ln -nfs "$SITE_DIR/shared/.env" "$RELEASE_DIR/.env"
+rm -rf -- "$RELEASE_DIR/storage"
+ln -nfs "$SITE_DIR/shared/storage" "$RELEASE_DIR/storage"
+mkdir -p "$RELEASE_DIR/bootstrap/cache"
+
+step "Installation des dependances Composer"
+cd "$RELEASE_DIR"
+"$PHP" /usr/local/bin/composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader --no-progress
+
+step "Mise en cache de la configuration, des routes et des vues"
+"$PHP" artisan config:cache
+"$PHP" artisan route:cache
+"$PHP" artisan view:cache || warn "view:cache a echoue (application sans vues ?)"
+"$PHP" artisan event:cache || warn "event:cache a echoue"
+"$PHP" artisan storage:link >/dev/null 2>&1 || true
+{{- if .Migrate }}
+
+step "Execution des migrations de base de donnees"
+"$PHP" artisan migrate --force --no-interaction
+{{- end }}
+
+step "Activation de la release (bascule atomique du lien 'current')"
+ln -sfn "$RELEASE_DIR" "$SITE_DIR/.current.tmp"
+mv -Tf "$SITE_DIR/.current.tmp" "$SITE_DIR/current"
+ACTIVATED=1
+echo "::th-activated::$RELEASE"
+
+step "Rechargement de PHP-FPM et redemarrage des workers"
+sudo -n /usr/bin/systemctl reload {{ q .FPMService }} || warn "rechargement de {{ .FPMService }} impossible"
+"$PHP" artisan queue:restart || warn "queue:restart a echoue"
+{{- if .Reverb }}
+"$PHP" artisan reverb:restart || warn "reverb:restart a echoue"
+{{- end }}
+
+step "Nettoyage des anciennes releases (conservation des {{ .KeepReleases }} dernieres)"
+cd "$SITE_DIR/releases"
+for old in $( (ls -1 | grep -E '^[0-9]{14}$' | sort -r | tail -n +{{ add .KeepReleases 1 }}) || true ); do
+  [ "$old" = "$RELEASE" ] || rm -rf -- "$old" || warn "suppression de $old impossible"
+done
+
+echo "::th-done::$RELEASE"

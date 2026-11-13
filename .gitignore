@@ -1,0 +1,22 @@
+# Binaires compilés
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/terangahost
+
+# Données locales de test
+.terangahost/
+
+# Fichiers de log
+*.log
+
+# IDE & OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
