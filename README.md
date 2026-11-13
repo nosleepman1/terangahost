@@ -184,4 +184,6 @@ official Laravel skeleton on every push to `main`.
 
 ---
 
-***Author: [Abdallah DIOUF](https://github.com/nosleepman1)*** · Licensed under the [MIT License](LICENSE).
+***Author: [Abdallah DIOUF](https://github.com/nosleepman1)*** 
+
+· Licensed under the [MIT License](LICENSE).
